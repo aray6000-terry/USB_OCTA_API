@@ -18,7 +18,7 @@ const SYSTEM_CONFIG = {
   CURRENT_YEAR: 2026,
 
   // 預設 Google Apps Script 佈署網址
-  DEFAULT_GAS_URL: "https://script.google.com/macros/s/AKfycbxBrJVcUkoUab5PrZIR9KYCwMTswNNq8JI9ZXE32u5nHZkTcmQC9Ms-QW4F1HaJollrow/exec",
+  DEFAULT_GAS_URL: "https://script.google.com/macros/s/AKfycbwcaG9YDyJahyRJGavxnH5wqZzSMMRHTVlr_4jrLz4O1qDjSbX-_Q7CLt_qTlwM9gW5/exec",
 
   // LocalStorage Keys
   STORAGE_KEYS: {
