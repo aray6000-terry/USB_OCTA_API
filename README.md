@@ -72,12 +72,30 @@ d:\#1_GOOGLE_Antigravity\請假系統/
 - **頂部身分切換器**：可切換 **王小明 (員工)**、**陳主管 (主管)**、**林經理 (HR/Admin)** 體驗完整申請、動態審核與銷假退額流程。
 
 ### 2. 串接 Google Sheet 線上資料庫
+
+系統支援兩種串接方式，**強烈建議採用方式 A (程式庫 Library 模式)**：
+
+#### 🌟 方式 A：採用 Google Apps Script 程式庫 (Library) 模式 (推薦)
 1. 開啟 [Google Sheets](https://sheets.new) 建立新試算表。
 2. 點選頂部選單 **擴充功能 (Extensions) > Apps Script**。
-3. 將 `google-apps-script/Code.gs` 完整複製並貼上到編輯器。
-4. 在上方執行函式選擇 `initDatabase` 並點擊「執行」，即可**自動建立所有 Sheet 工作表與種子資料**。
-5. 點擊右上角 **佈署 > 新增佈署作業**，類型選擇 **網路應用程式 (Web app)**，誰可以存取設為 **所有人 (Anyone)**。
-6. 將產生的 Web App URL 複製，在系統的「系統設定」頁面貼上並儲存即可完成雲端串接！
+3. 在左側側邊欄「**程式庫 (Libraries)**」點擊「**+**」新增：
+   - **指令碼 ID**：`1Hg-tTkKWKvQ_W2I-kAbOklCIp-HNjRCkplpj47P2gHZ-VmaT2n18BEqd`
+   - **程式庫網址**：`https://script.google.com/macros/library/d/1Hg-tTkKWKvQ_W2I-kAbOklCIp-HNjRCkplpj47P2gHZ-VmaT2n18BEqd/1`
+   - 點擊「查詢」，**版本**選擇 `1`，**識別碼 (Identifier)** 輸入 `OCTA_API`，點擊「新增」。
+4. 將專案中的 [`google-apps-script/GoogleSheet_Client.gs`](file:///google-apps-script/GoogleSheet_Client.gs) 內容複製貼上至編輯器中儲存。
+5. 上方執行函式選擇 `initDatabase` 並點擊「執行」，即可**自動在此試算表建置 7 大工作表與種子資料**。
+6. 點擊右上角 **部署 > 新增部署作業**：
+   - 類型：**網頁應用程式 (Web app)**
+   - 執行身分：**我 (Me)**
+   - 誰可以存取：**所有人 (Anyone)**
+7. 將產生的 Web App URL 複製，在系統的「系統設定」頁面貼上並儲存即可完成雲端串接！
+
+#### 方式 B：獨立複製腳本模式
+1. 開啟 [Google Sheets](https://sheets.new) 建立新試算表。
+2. 點選頂部選單 **擴充功能 (Extensions) > Apps Script**。
+3. 將 [`google-apps-script/Code.gs`](file:///google-apps-script/Code.gs) 完整複製並貼上到編輯器。
+4. 在上方執行函式選擇 `initDatabase` 並點擊「執行」完成建表。
+5. 點擊右上角 **部署 > 新增部署作業**，類型選擇 **網路應用程式 (Web app)**，誰可以存取設為 **所有人 (Anyone)**，複製產生的 URL。
 
 ### 3. 線上資料庫帳號與權限一覽 (預設密碼皆為 123456)
 

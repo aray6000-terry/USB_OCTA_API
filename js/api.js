@@ -145,18 +145,68 @@ const ApiService = {
         }
 
         const userId = params.userId || "EMP001";
-        let currentUser = db.users.find(u => u.id === userId) || db.users[0];
+        const rawUser = db.users.find(u => u.id === userId) || db.users[0];
+        const currentUser = { ...rawUser, password_hash: undefined };
+        const role = currentUser ? currentUser.role : "Employee";
+        const subIds = new Set(db.users.filter(u => u.manager_id === currentUser.id).map(u => u.id));
+        subIds.add(currentUser.id);
+
+        // 依角色在 API 層過濾資料範圍，防止前端窺探他人隱私
+        let scopedBalances = [];
+        let scopedRequests = [];
+        let scopedOvertimes = [];
+        let scopedLogs = [];
+
+        const allLogs = (db.logs || []).slice().sort((a, b) => new Date(b.acted_at || 0) - new Date(a.acted_at || 0));
+
+        if (role === "Admin" || role === "HR") {
+          scopedBalances = db.balances;
+          scopedRequests = db.requests;
+          scopedOvertimes = db.overtimes;
+          scopedLogs = allLogs;
+        } else if (role === "Manager") {
+          scopedBalances = db.balances.filter(b => subIds.has(b.user_id));
+          scopedOvertimes = db.overtimes.filter(o => subIds.has(o.user_id));
+          scopedLogs = allLogs.filter(l => {
+            const isSubReq = db.requests.some(r => r.id === l.request_id && subIds.has(r.user_id));
+            const isSubOt = db.overtimes.some(o => o.id === l.request_id && subIds.has(o.user_id));
+            return isSubReq || isSubOt || l.approver_id === currentUser.id;
+          });
+          scopedRequests = db.requests.map(r => {
+            if (subIds.has(r.user_id)) return r;
+            return { ...r, reason: "公出/休假", attachment_url: "" };
+          });
+        } else {
+          scopedBalances = db.balances.filter(b => b.user_id === currentUser.id);
+          scopedOvertimes = db.overtimes.filter(o => o.user_id === currentUser.id);
+          scopedLogs = allLogs.filter(l => {
+            const isMyReq = db.requests.some(r => r.id === l.request_id && r.user_id === currentUser.id);
+            const isMyOt = db.overtimes.some(o => o.id === l.request_id && o.user_id === currentUser.id);
+            return isMyReq || isMyOt;
+          });
+          scopedRequests = db.requests.map(r => {
+            if (r.user_id === currentUser.id) return r;
+            return { ...r, reason: "請假", attachment_url: "" };
+          });
+        }
 
         return {
           success: true,
           data: {
             currentUser,
-            users: db.users.map(u => ({ ...u, password_hash: undefined })),
+            users: db.users.map(u => ({
+              id: u.id,
+              name: u.name,
+              department_id: u.department_id,
+              department_name: u.department_name,
+              manager_id: u.manager_id,
+              role: u.role
+            })),
             leaveTypes: db.leaveTypes,
-            balances: db.balances,
-            requests: db.requests,
-            overtimes: db.overtimes,
-            logs: (db.logs || []).slice().sort((a, b) => new Date(b.acted_at || 0) - new Date(a.acted_at || 0)),
+            balances: scopedBalances,
+            requests: scopedRequests,
+            overtimes: scopedOvertimes,
+            logs: scopedLogs,
             holidays: db.holidays,
             config: {
               workStart: SYSTEM_CONFIG.WORK_START,
@@ -184,7 +234,8 @@ const ApiService = {
         if (!user) {
           return { success: false, message: "帳號或密碼錯誤，請重新確認輸入。" };
         }
-        return { success: true, message: "登入成功", user: { ...user, password_hash: undefined } };
+        const token = `AUTH_${user.id}_${Date.now()}`;
+        return { success: true, message: "登入成功", token, user: { ...user, password_hash: undefined } };
       }
 
       case "calculateHours": {
@@ -787,8 +838,9 @@ const ApiService = {
   },
 
   // API 快捷方法包裝
-  async getBootstrapData(userId) {
-    return this.callApi("getBootstrapData", { userId });
+  async getBootstrapData(userId, token) {
+    const authToken = token || sessionStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN) || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
+    return this.callApi("getBootstrapData", { userId, token: authToken });
   },
 
   async login(email, password) {

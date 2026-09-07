@@ -101,6 +101,10 @@ const App = {
       if (res.success && res.user) {
         localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.SESSION_LOGGED_IN, "true");
         localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID, res.user.id);
+        if (res.token) {
+          sessionStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN, res.token);
+          localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN, res.token);
+        }
 
         const loginOverlay = document.getElementById("loginScreen");
         if (loginOverlay) loginOverlay.classList.add("hidden");
@@ -195,6 +199,8 @@ const App = {
   handleLogout() {
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.SESSION_LOGGED_IN);
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID);
+    sessionStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
+    localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
     this.state.currentUser = null;
 
     // 清除 Header 與畫面上的個人資訊
@@ -221,7 +227,8 @@ const App = {
    */
   async loadData(userId = null) {
     const activeId = userId || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID) || "EMP001";
-    const res = await ApiService.getBootstrapData(activeId);
+    const token = sessionStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN) || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
+    const res = await ApiService.getBootstrapData(activeId, token);
     
     if (res.success && res.data) {
       this.state.currentUser = res.data.currentUser;

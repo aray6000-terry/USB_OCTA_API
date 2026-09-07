@@ -33,6 +33,51 @@ const CONFIG = {
   }
 };
 
+const AUTH_SECRET = "LEAVE_SYS_SECRET_KEY_2026";
+
+function createAuthToken(userId, role) {
+  const expireAt = Date.now() + 12 * 60 * 60 * 1000; // 12 小時
+  const payload = `${userId}:${role}:${expireAt}`;
+  const signature = Utilities.base64Encode(
+    Utilities.computeHmacSha256Signature(payload, AUTH_SECRET)
+  );
+  return `${Utilities.base64Encode(payload)}.${signature}`;
+}
+
+function verifyAuthToken(token) {
+  if (!token || token.indexOf(".") === -1) return null;
+  try {
+    const [b64Payload, sig] = token.split(".");
+    const payload = Utilities.newBlob(Utilities.base64Decode(b64Payload)).getDataAsString();
+    const expectedSig = Utilities.base64Encode(
+      Utilities.computeHmacSha256Signature(payload, AUTH_SECRET)
+    );
+    if (sig !== expectedSig) return null;
+    const [userId, role, expireAt] = payload.split(":");
+    if (Date.now() > parseInt(expireAt, 10)) return null;
+    return { userId, role };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ======================== 試算表存取核心 (支援 Google Sheet 容器綁定與 Library 程式庫模式) ========================
+
+function getSpreadsheet() {
+  let ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    try {
+      const sheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+      if (sheetId) {
+        ss = SpreadsheetApp.openById(sheetId);
+      }
+    } catch (e) {
+      Logger.log("getSpreadsheet openById fallback failed: " + e.message);
+    }
+  }
+  return ss;
+}
+
 // ======================== Web App 請求入口 ========================
 
 function doGet(e) {
@@ -70,7 +115,7 @@ function handleRequest(e) {
         break;
 
       case "getBootstrapData":
-        result = getBootstrapData(params.userId);
+        result = getBootstrapData(params.userId, params.token);
         break;
 
       case "login":
@@ -164,7 +209,7 @@ function handleRequest(e) {
 // ======================== 資料庫初始化 (一鍵建表與種子資料) ========================
 
 function initDatabase(forceReset) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const sheets = CONFIG.SHEETS;
   const isForce = forceReset === true || forceReset === "true";
 
@@ -355,7 +400,7 @@ function calculateStatutoryAnnualLeaveHours(hireDate, asOfDate) {
  * 讀取 users 表的到職日 (hire_date)，自動計算並同步更新 leave_balances 的 ANNUAL 額度
  */
 function syncStatutoryAnnualLeaves(ss) {
-  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
   if (!userSheet || !balSheet) return { success: false, message: "資料表不存在" };
@@ -499,7 +544,7 @@ function calculateStatutoryAnnualLeaveHours(hireDate, targetYear) {
  * 自動檢查並為 Google Sheet 的 holidays 分頁補齊 2026-2030 年國定假日與連假補假
  */
 function syncHolidays(ss) {
-  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) ss = getSpreadsheet();
   let hSheet = ss.getSheetByName(CONFIG.SHEETS.HOLIDAYS);
   const holidayHeaders = ["date", "name", "is_workday"];
   const allHolidaySeeds = get2026To2030HolidaySeeds();
@@ -644,7 +689,7 @@ function get2026To2030HolidaySeeds() {
  * 自動同步 leave_types 最新設定 (病假改為支半薪、不強制附件)
  */
 function syncLeaveTypes(ss) {
-  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) ss = getSpreadsheet();
   const ltSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_TYPES);
   if (!ltSheet) return;
 
@@ -679,7 +724,7 @@ function syncLeaveTypes(ss) {
  * 自動檢查並修復雲端 Google Sheet 歷史重複單號 (Deduplication & Self-Healing)
  */
 function syncDeduplicateRequests(ss) {
-  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) ss = getSpreadsheet();
   
   // 1. 處理請假單 leave_requests
   const reqSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_REQUESTS);
@@ -738,8 +783,8 @@ function syncDeduplicateRequests(ss) {
 
 // ======================== 資料讀取與 Bootstrap ========================
 
-function getBootstrapData(currentUserId) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+function getBootstrapData(currentUserId, authToken) {
+  const ss = getSpreadsheet();
   
   // 自動同步最新法定特休額度至 leave_balances 表
   syncStatutoryAnnualLeaves(ss);
@@ -772,24 +817,87 @@ function getBootstrapData(currentUserId) {
   logs.sort((a, b) => new Date(b.acted_at || 0) - new Date(a.acted_at || 0));
   const holidays = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.HOLIDAYS));
 
+  // 驗證 Token 提取身分；若無 Token 則以傳入之 currentUserId 為準
+  const tokenPayload = verifyAuthToken(authToken);
+  const activeUserId = tokenPayload ? tokenPayload.userId : (currentUserId || (users[0] ? users[0].id : null));
+
   let currentUser = null;
-  if (currentUserId) {
-    currentUser = users.find(u => u.id === currentUserId);
+  if (activeUserId) {
+    currentUser = users.find(u => u.id === activeUserId);
   }
   if (!currentUser && users.length > 0) {
     currentUser = users[0]; // 預設第一位員工
   }
 
+  // 1. 嚴格過濾：currentUser 物件徹底清除敏感密碼欄位
+  const safeCurrentUser = currentUser ? Object.assign({}, currentUser, { password_hash: undefined }) : null;
+
+  // 2. 通訊錄過濾：移除 password_hash、hire_date 等隱私欄位，保留選單必要屬性
+  const safeUsers = users.map(u => ({
+    id: u.id,
+    name: u.name,
+    department_id: u.department_id,
+    department_name: u.department_name,
+    manager_id: u.manager_id,
+    role: u.role
+  }));
+
+  // 3. 依角色範圍過濾 (RBAC Scoping)，防止一般員工透過 API 或 DevTools 窺探全公司差勤隱私
+  const userRole = currentUser ? currentUser.role : "Employee";
+  let scopedBalances = [];
+  let scopedRequests = [];
+  let scopedOvertimes = [];
+  let scopedLogs = [];
+
+  if (userRole === "Admin" || userRole === "HR") {
+    // HR 與最高管理員：可查全公司差勤紀錄
+    scopedBalances = balances;
+    scopedRequests = requests;
+    scopedOvertimes = overtimes;
+    scopedLogs = logs;
+  } else if (userRole === "Manager") {
+    // 直屬主管：可查自己與直屬下屬的審核資料
+    const subIds = new Set(users.filter(u => u.manager_id === currentUser.id).map(u => u.id));
+    subIds.add(currentUser.id);
+
+    scopedBalances = balances.filter(b => subIds.has(b.user_id));
+    scopedOvertimes = overtimes.filter(o => subIds.has(o.user_id));
+    scopedLogs = logs.filter(l => {
+      const isSubReq = requests.some(r => r.id === l.request_id && subIds.has(r.user_id));
+      const isSubOt = overtimes.some(o => o.id === l.request_id && subIds.has(o.user_id));
+      return isSubReq || isSubOt || l.approver_id === currentUser.id;
+    });
+    // 請假單：下屬與自己的單據保留事由；其他同仁單據用於行事曆排班，事由脫敏
+    scopedRequests = requests.map(r => {
+      if (subIds.has(r.user_id)) return r;
+      return Object.assign({}, r, { reason: "公出/休假", attachment_url: "" });
+    });
+  } else {
+    // 一般同仁：只能查詢本人之額度、加班與簽核歷程
+    scopedBalances = balances.filter(b => b.user_id === currentUser.id);
+    scopedOvertimes = overtimes.filter(o => o.user_id === currentUser.id);
+    scopedLogs = logs.filter(l => {
+      const isMyReq = requests.some(r => r.id === l.request_id && r.user_id === currentUser.id);
+      const isMyOt = overtimes.some(o => o.id === l.request_id && o.user_id === currentUser.id);
+      return isMyReq || isMyOt;
+    });
+    // 請假單：本人保留事由與證明附件；其他同仁僅保留日期供行事曆檢視排班，事由與附件徹底移除
+    scopedRequests = requests.map(r => {
+      if (r.user_id === currentUser.id) return r;
+      return Object.assign({}, r, { reason: "請假", attachment_url: "" });
+    });
+  }
+
   return {
     success: true,
     data: {
-      currentUser: currentUser,
-      users: users.map(u => ({ ...u, password_hash: undefined })), // 安全過濾密碼
+      currentUser: safeCurrentUser,
+      users: safeUsers,
       leaveTypes: leaveTypes,
-      balances: balances,
-      requests: requests,
-      overtimes: overtimes,
-      logs: logs,
+      balances: scopedBalances,
+      requests: scopedRequests,
+      overtimes: scopedOvertimes,
+      logs: scopedLogs,
       holidays: holidays,
       config: {
         workStart: CONFIG.WORK_START,
@@ -804,7 +912,7 @@ function getBootstrapData(currentUserId) {
 }
 
 function loginUser(email, password) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   
   const inputEmail = String(email || "").trim().toLowerCase();
@@ -832,9 +940,12 @@ function loginUser(email, password) {
     created_at: user.created_at
   };
 
+  const token = createAuthToken(user.id, user.role);
+
   return {
     success: true,
     message: "登入成功",
+    token: token,
     user: userSafe
   };
 }
@@ -849,7 +960,7 @@ function changePassword(params) {
     return { success: false, message: "新密碼長度至少需 4 碼以上！" };
   }
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   if (!userSheet) return { success: false, message: "使用者資料表不存在" };
 
@@ -892,7 +1003,7 @@ function changePassword(params) {
 function calculateLeaveHours(startStr, endStr) {
   if (!startStr || !endStr) return 0;
   
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const holidaysSheet = ss.getSheetByName(CONFIG.SHEETS.HOLIDAYS);
   const holidayList = holidaysSheet ? sheetToObjects(holidaysSheet) : [];
   
@@ -970,7 +1081,7 @@ function calculateLeaveHours(startStr, endStr) {
 
 function applyLeave(params) {
   const { userId, leaveTypeId, startTime, endTime, reason, attachmentUrl } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
 
   // 1. 基本檢核
   if (!userId || !leaveTypeId || !startTime || !endTime) {
@@ -1155,7 +1266,7 @@ function applyLeave(params) {
 
 function cancelLeave(params) {
   const { requestId, userId, cancelReason } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const reqSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_REQUESTS);
   const reqData = reqSheet.getDataRange().getValues();
   const reqHeaders = reqData[0];
@@ -1223,7 +1334,7 @@ function cancelLeave(params) {
 
 function reviewLeave(params, action) {
   const { requestId, approverId, comment } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
 
   const reqSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_REQUESTS);
   const reqData = reqSheet.getDataRange().getValues();
@@ -1342,7 +1453,7 @@ function reviewLeave(params, action) {
 
 function applyOvertime(params) {
   const { userId, date, startTime, endTime, hours, compRate, reason } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
 
   if (!userId || !date || !startTime || !endTime || !hours) {
     return { success: false, message: "請完整填寫加班資料。" };
@@ -1436,7 +1547,7 @@ function applyOvertime(params) {
 
 function reviewOvertime(params, action) {
   const { overtimeId, approverId, comment } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
 
   const otSheet = ss.getSheetByName(CONFIG.SHEETS.OVERTIME_REQUESTS);
   const otData = otSheet.getDataRange().getValues();
@@ -1612,7 +1723,7 @@ function logApproval(ss, requestId, requestType, approverId, approverRole, statu
 
 function adminUpdateBalance(params) {
   const { balanceId, totalHours } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
   const balData = balSheet.getDataRange().getValues();
   const idIdx = balData[0].indexOf("id");
@@ -1629,7 +1740,7 @@ function adminUpdateBalance(params) {
 
 function adminUpdateUser(params) {
   const { id, name, department_name, manager_id, role, hire_date } = params;
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   const userData = userSheet.getDataRange().getValues();
   const headers = userData[0];
@@ -1671,7 +1782,7 @@ function adminCreateUser(params) {
     return { success: false, message: "請務必填寫員工姓名與電子信箱！" };
   }
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
   const userData = userSheet.getDataRange().getValues();
@@ -1778,7 +1889,7 @@ function adminDeleteUser(params) {
     return { success: false, message: "請指定要刪除的員工 ID！" };
   }
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
   const userData = userSheet.getDataRange().getValues();
