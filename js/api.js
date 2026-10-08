@@ -3,9 +3,43 @@
  * 支援無縫切換【Google Apps Script 線上後端】與【本機高效模擬引擎】
  */
 const ApiService = {
+  // 連線狀態追蹤
+  _connectionStatus: "unknown", // "online" | "offline" | "error" | "connecting"
+  _lastSyncTime: null,
+  _lastError: null,
+
+  getConnectionStatus() {
+    return {
+      status: this._connectionStatus,
+      lastSyncTime: this._lastSyncTime,
+      lastError: this._lastError,
+      isRemote: this.isUsingRemoteGas(),
+      url: this.getGasUrl(),
+      isCustomOverride: localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true"
+    };
+  },
+
+  setConnectionStatus(status, err = null) {
+    this._connectionStatus = status;
+    if (status === "online") {
+      this._lastSyncTime = new Date();
+      this._lastError = null;
+    } else if (status === "error") {
+      this._lastError = err;
+    }
+    if (typeof App !== "undefined" && typeof App.updateConnectionIndicator === "function") {
+      App.updateConnectionIndicator();
+    }
+  },
+
   getGasUrl() {
-    const stored = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
-    if (stored && stored.trim()) return stored.trim();
+    // 檢查是否有顯式啟用自訂覆寫
+    const isOverride = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true";
+    if (isOverride) {
+      const stored = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
+      if (stored && stored.trim()) return stored.trim();
+    }
+    // 預設一律回傳全域代碼配置的官方網址，確保所有同仁跨裝置 100% 同步同一資料庫
     return SYSTEM_CONFIG.DEFAULT_GAS_URL || "";
   },
 
@@ -17,7 +51,13 @@ const ApiService = {
         return false;
       }
     }
-    localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL, (url || "").trim());
+    const trimmed = (url || "").trim();
+    if (trimmed && trimmed !== SYSTEM_CONFIG.DEFAULT_GAS_URL) {
+      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE, "true");
+      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL, trimmed);
+    } else {
+      this.resetToDefaultGasUrl();
+    }
     return true;
   },
 
@@ -37,15 +77,18 @@ const ApiService = {
       }
     }
     localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.USE_REMOTE_GAS, useRemote ? "true" : "false");
+    this.setConnectionStatus(useRemote ? "connecting" : "offline");
     return true;
   },
 
   /**
-   * 一鍵還原官方預設 Google Sheet 資料庫連線路徑
+   * 一鍵還原官方預設 Google Sheet 資料庫連線路徑 (清除所有自訂覆寫與舊網址快取)
    */
   resetToDefaultGasUrl() {
-    localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL, SYSTEM_CONFIG.DEFAULT_GAS_URL);
+    localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE);
+    localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
     localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.USE_REMOTE_GAS, "true");
+    this.setConnectionStatus("connecting");
     return SYSTEM_CONFIG.DEFAULT_GAS_URL;
   },
 
@@ -59,14 +102,21 @@ const ApiService = {
     }
 
     try {
+      this.setConnectionStatus("connecting");
       const response = await fetch(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({ action: "ping" })
       });
       const data = await response.json();
+      if (data && data.success) {
+        this.setConnectionStatus("online");
+      } else {
+        this.setConnectionStatus("error", data ? data.message : "連線回應不正確");
+      }
       return data;
     } catch (err) {
+      this.setConnectionStatus("error", err.message);
       return {
         success: false,
         message: "連線至 Google Apps Script 失敗：" + err.message + " (請確認網址是否為 /exec 結尾，且存取權限設為所有人)。"
@@ -75,32 +125,69 @@ const ApiService = {
   },
 
   /**
-   * 通用請求分派器
+   * 通用請求分派器 (防靜默降級機制)
    */
   async callApi(action, params = {}) {
+    // 嚴格定義資料異動操作：禁止靜默降級至本機 LocalStorage
+    const MUTATION_ACTIONS = [
+      "applyLeave", "cancelLeave", "approveLeave", "rejectLeave",
+      "applyOvertime", "approveOvertime", "rejectOvertime",
+      "adminUpdateBalance", "adminUpdateUser", "adminCreateUser", "adminDeleteUser",
+      "changePassword"
+    ];
+    const isMutation = MUTATION_ACTIONS.indexOf(action) !== -1;
+
     // 若啟用線上 Google Apps Script
     if (this.isUsingRemoteGas()) {
       try {
         const gasUrl = this.getGasUrl();
+        if (!gasUrl) {
+          throw new Error("尚未配置 Google Apps Script 連線網址");
+        }
         const payload = Object.assign({ action: action }, params);
         const response = await fetch(gasUrl, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
           body: JSON.stringify(payload)
         });
+
+        if (!response.ok) {
+          throw new Error(`HTTP 伺服器異常 (${response.status})`);
+        }
+
         const result = await response.json();
+        this.setConnectionStatus("online");
+
         // 若遠端 GAS 回報不支援此 action (如尚未更新部署的 login)，平滑降級至本機模組處理
         if (result && !result.success && typeof result.message === "string" && result.message.indexOf("Action not supported") !== -1) {
-          console.warn(`遠端 GAS 未支援 ${action}，自動切換至本機模組處理`);
+          console.warn(`遠端 GAS 未支援 ${action}，自動切換至本機相容模組處理`);
           return this.callMockApi(action, params);
         }
         return result;
       } catch (err) {
-        console.error("線上 GAS API 呼叫失敗，自動降級使用本機資料庫：", err);
+        console.error(`線上 GAS API [${action}] 呼叫失敗：`, err);
+        this.setConnectionStatus("error", err.message);
+
+        // 【關鍵防呆】：異動操作絕不允許靜默降級到 LocalStorage！
+        if (isMutation) {
+          return {
+            success: false,
+            message: `【雲端同步失敗】無法寫入 Google Sheet 資料庫 (${err.message || "網路異常或 GAS 無回應"})。為維持全體資料一致性，此單據未建立，請檢查網路連線或稍後再試！`
+          };
+        }
+
+        // 若為查詢操作 (如 getBootstrapData)，平滑降級展示快取並標註警告
+        console.warn(`[${action}] 查詢暫時降級使用本機快取展示...`);
+        const fallbackRes = await this.callMockApi(action, params);
+        if (fallbackRes && fallbackRes.success) {
+          fallbackRes.isOfflineFallback = true;
+        }
+        return fallbackRes;
       }
     }
 
     // 預設/備援：使用本機 Mock 引擎
+    this.setConnectionStatus("offline");
     return this.callMockApi(action, params);
   },
 

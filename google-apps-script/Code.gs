@@ -873,13 +873,14 @@ function getBootstrapData(currentUserId, authToken) {
       return Object.assign({}, r, { reason: "公出/休假", attachment_url: "" });
     });
   } else {
-    // 一般同仁：只能查詢本人之額度、加班與簽核歷程
+    // 一般同仁：只能查詢本人之額度、加班與簽核歷程 (含本人送出與關聯之單據)
     scopedBalances = balances.filter(b => b.user_id === currentUser.id);
     scopedOvertimes = overtimes.filter(o => o.user_id === currentUser.id);
     scopedLogs = logs.filter(l => {
-      const isMyReq = requests.some(r => r.id === l.request_id && r.user_id === currentUser.id);
-      const isMyOt = overtimes.some(o => o.id === l.request_id && o.user_id === currentUser.id);
-      return isMyReq || isMyOt;
+      const isMyReq = requests.some(r => (r.id === l.request_id || r["申請單號"] === l.request_id) && r.user_id === currentUser.id);
+      const isMyOt = overtimes.some(o => (o.id === l.request_id || o["申請單號"] === l.request_id) && o.user_id === currentUser.id);
+      const isMyAction = (l.approver_id === currentUser.id);
+      return isMyReq || isMyOt || isMyAction;
     });
     // 請假單：本人保留事由與證明附件；其他同仁僅保留日期供行事曆檢視排班，事由與附件徹底移除
     scopedRequests = requests.map(r => {
@@ -1956,16 +1957,24 @@ function sheetToObjects(sheet) {
         val = val.substring(0, 10);
       }
       obj[header] = val;
-      // 雙向相容中英文單號與歷程欄位名稱
+      // 雙向相容中英文單號與歷程欄位名稱 (精確區分 LOG- 歷程編號 與 REQ-/OT- 單號)
       const hTrim = String(header).trim().toLowerCase();
-      if (hTrim === "id" || header === "申請單號" || header === "單號" || header === "歷程編號") {
-        if (!obj.id) obj.id = val;
-        if (!obj["申請單號"]) obj["申請單號"] = val;
+      const valStr = String(val || "").trim();
+      const isReqOrOt = valStr.startsWith("REQ-") || valStr.startsWith("OT-");
+      const isLog = valStr.startsWith("LOG-");
+
+      if (hTrim === "id" || header === "歷程編號" || header === "單號" || (header === "申請單號" && !isReqOrOt)) {
+        if (!obj.id || isLog) obj.id = val;
       }
-      if (hTrim === "request_id" || header === "關聯單號" || header === "申請單號") {
+      if (hTrim === "request_id" || header === "關聯單號" || (header === "申請單號" && isReqOrOt)) {
+        if (!obj.request_id || isReqOrOt) {
+          obj.request_id = val;
+          obj["關聯單號"] = val;
+        }
+      }
+      if (isReqOrOt) {
+        if (!obj.id) obj.id = val;
         if (!obj.request_id) obj.request_id = val;
-        if (!obj["關聯單號"]) obj["關聯單號"] = val;
-        if (!obj["申請單號"]) obj["申請單號"] = val;
       }
       // 雙向相容 leave_balances 假別額度欄位名稱
       if (hTrim === "user_id" || header === "員工編號" || header === "工號" || header === "申請人") {

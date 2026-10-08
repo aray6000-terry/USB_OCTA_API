@@ -255,6 +255,22 @@ button, input, select, textarea {
   box-shadow: 0 0 0 2px var(--warning-border);
 }
 
+.status-dot.error {
+  background: var(--danger, #ef4444);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3);
+}
+
+.status-dot.loading {
+  background: var(--info, #3b82f6);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+  animation: pulse-dot 1.5s infinite ease-in-out;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
 /* 主內容區 (Main Content) */
 .app-main {
   flex: 1;

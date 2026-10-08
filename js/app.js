@@ -48,6 +48,13 @@ const App = {
    */
   async init() {
     this.setupEventListeners();
+    // 自動檢測並清理各裝置 LocalStorage 殘留的過期舊 GAS 網址 (確保全裝置連線一致)
+    const storedUrl = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
+    const isOverride = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true";
+    if (storedUrl && !isOverride && storedUrl !== SYSTEM_CONFIG.DEFAULT_GAS_URL) {
+      console.log("偵測到本機殘留舊版資料庫網址，自動校正回全域官方 DEFAULT_GAS_URL！");
+      localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
+    }
     await this.checkAuth();
   },
 
@@ -229,6 +236,10 @@ const App = {
     const activeId = userId || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID) || "EMP001";
     const token = sessionStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN) || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
     const res = await ApiService.getBootstrapData(activeId, token);
+    
+    if (res && res.isOfflineFallback) {
+      this.showToast("⚠️ 雲端 Google Sheet 連線異常，目前顯示本機暫存快取！", "warning");
+    }
     
     if (res.success && res.data) {
       this.state.currentUser = res.data.currentUser;
@@ -450,15 +461,47 @@ const App = {
     if (selector) selector.value = user.id;
 
     // Google Sheet 連線狀態指示
-    const isRemote = ApiService.isUsingRemoteGas();
+    this.updateConnectionIndicator();
+  },
+
+  /**
+   * Google Sheet 連線狀態真實健康指示器 (消滅假綠燈，反映真實連線健康)
+   */
+  updateConnectionIndicator() {
     const dot = document.getElementById("sheetStatusDot");
     const text = document.getElementById("sheetStatusText");
-    if (isRemote) {
-      dot.classList.remove("offline");
-      text.textContent = "Google Sheet 連線中";
-    } else {
+    if (!dot || !text) return;
+
+    const conn = ApiService.getConnectionStatus();
+    dot.className = "status-dot";
+
+    if (!conn.isRemote) {
       dot.classList.add("offline");
       text.textContent = "本機展示資料庫";
+      dot.parentElement.title = "目前處於本機模擬資料庫模式，資料僅儲存於當前瀏覽器";
+      return;
+    }
+
+    switch (conn.status) {
+      case "online":
+        text.textContent = "Google Sheet 已連線";
+        const timeStr = conn.lastSyncTime ? LeaveEngine.formatDateTime(conn.lastSyncTime) : "";
+        dot.parentElement.title = `雲端連線正常！\n最後同步時間：${timeStr}\n端點：${conn.url}`;
+        break;
+      case "error":
+        dot.classList.add("error");
+        text.textContent = "Google Sheet 連線異常";
+        dot.parentElement.title = `連線異常：${conn.lastError || "伺服器無回應"}\n請點擊檢查網路或資料庫設定`;
+        break;
+      case "connecting":
+        dot.classList.add("loading");
+        text.textContent = "雲端同步中...";
+        dot.parentElement.title = "正在連線 Google Apps Script 後端伺服器...";
+        break;
+      default:
+        dot.classList.add("loading");
+        text.textContent = "資料庫連線中...";
+        dot.parentElement.title = `準備連線雲端：${conn.url}`;
     }
   },
 
