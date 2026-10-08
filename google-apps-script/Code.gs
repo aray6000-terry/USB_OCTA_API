@@ -115,7 +115,7 @@ function handleRequest(e) {
         break;
 
       case "getBootstrapData":
-        result = getBootstrapData(params.userId, params.token);
+        result = getBootstrapData(params.userId, params.token, params.shouldSync);
         break;
 
       case "login":
@@ -783,20 +783,16 @@ function syncDeduplicateRequests(ss) {
 
 // ======================== 資料讀取與 Bootstrap ========================
 
-function getBootstrapData(currentUserId, authToken) {
+function getBootstrapData(currentUserId, authToken, shouldSync) {
   const ss = getSpreadsheet();
   
-  // 自動同步最新法定特休額度至 leave_balances 表
-  syncStatutoryAnnualLeaves(ss);
-
-  // 自動為 Google Sheet 的 holidays 分頁同步補齊 2026-2030 年假日資料
-  syncHolidays(ss);
-
-  // 自動同步假別最新設定 (病假改為支半薪、免強制檢附證明)
-  syncLeaveTypes(ss);
-
-  // 自動防呆除重現存重複單號 (Self-Healing)
-  syncDeduplicateRequests(ss);
+  // 僅在顯式指定或後台維護時執行重度全表掃描同步，日常查詢高速唯讀，避免 GAS 執行逾時 (15s -> 1.5s)
+  if (shouldSync === true || shouldSync === "true") {
+    syncStatutoryAnnualLeaves(ss);
+    syncHolidays(ss);
+    syncLeaveTypes(ss);
+    syncDeduplicateRequests(ss);
+  }
 
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   const leaveTypes = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.LEAVE_TYPES));

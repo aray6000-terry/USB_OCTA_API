@@ -127,7 +127,7 @@ const ApiService = {
   /**
    * 通用請求分派器 (防靜默降級機制)
    */
-  async callApi(action, params = {}) {
+  async callApi(action, params = {}, retryCount = 1) {
     // 嚴格定義資料異動操作：禁止靜默降級至本機 LocalStorage
     const MUTATION_ACTIONS = [
       "applyLeave", "cancelLeave", "approveLeave", "rejectLeave",
@@ -151,11 +151,17 @@ const ApiService = {
           body: JSON.stringify(payload)
         });
 
-        if (!response.ok) {
-          throw new Error(`HTTP 伺服器異常 (${response.status})`);
+        const textData = await response.text();
+        let result = null;
+        try {
+          result = JSON.parse(textData);
+        } catch (jsonErr) {
+          if (textData.indexOf("<!DOCTYPE") !== -1 || textData.indexOf("<html") !== -1) {
+            throw new Error("Google Apps Script 回傳網頁 (請確認 Web App 存取權限是否設為『所有人 Anyone』)");
+          }
+          throw new Error("無法解析伺服器回應 (" + jsonErr.message + ")");
         }
 
-        const result = await response.json();
         this.setConnectionStatus("online");
 
         // 若遠端 GAS 回報不支援此 action (如尚未更新部署的 login)，平滑降級至本機模組處理
@@ -166,6 +172,14 @@ const ApiService = {
         return result;
       } catch (err) {
         console.error(`線上 GAS API [${action}] 呼叫失敗：`, err);
+
+        // 自動重試一次 (針對 Google Apps Script 冷啟動與暫態延遲)
+        if (retryCount > 0) {
+          console.warn(`[${action}] 首次連線失敗，正在自動重試連線...`);
+          await new Promise(r => setTimeout(r, 1200));
+          return this.callApi(action, params, retryCount - 1);
+        }
+
         this.setConnectionStatus("error", err.message);
 
         // 【關鍵防呆】：異動操作絕不允許靜默降級到 LocalStorage！
@@ -176,11 +190,12 @@ const ApiService = {
           };
         }
 
-        // 若為查詢操作 (如 getBootstrapData)，平滑降級展示快取並標註警告
-        console.warn(`[${action}] 查詢暫時降級使用本機快取展示...`);
+        // 若為查詢操作 (如 getBootstrapData)，平滑降級展示快取並標註精準錯誤原因
+        console.warn(`[${action}] 查詢暫時降級使用本機快取展示... 原因:`, err.message);
         const fallbackRes = await this.callMockApi(action, params);
         if (fallbackRes && fallbackRes.success) {
           fallbackRes.isOfflineFallback = true;
+          fallbackRes.offlineReason = err.message || "網路異常或伺服器無回應";
         }
         return fallbackRes;
       }

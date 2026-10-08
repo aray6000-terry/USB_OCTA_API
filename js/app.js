@@ -238,7 +238,8 @@ const App = {
     const res = await ApiService.getBootstrapData(activeId, token);
     
     if (res && res.isOfflineFallback) {
-      this.showToast("⚠️ 雲端 Google Sheet 連線異常，目前顯示本機暫存快取！", "warning");
+      const reasonText = res.offlineReason ? ` (${res.offlineReason})` : "";
+      this.showToast(`⚠️ 雲端資料庫連線失敗${reasonText}，目前顯示本機暫存！`, "warning");
     }
     
     if (res.success && res.data) {
