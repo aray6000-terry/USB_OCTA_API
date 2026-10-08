@@ -107,7 +107,7 @@ function handleRequest(e) {
     // 依據 action 進行路由分派
     switch (action) {
       case "ping":
-        result = { success: true, message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261008_V3", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
       case "initDatabase":
@@ -887,6 +887,8 @@ function getBootstrapData(currentUserId, authToken, shouldSync) {
 
   return {
     success: true,
+    apiVersion: "20261008_V3",
+    timestamp: new Date().toISOString(),
     data: {
       currentUser: safeCurrentUser,
       users: safeUsers,

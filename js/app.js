@@ -67,11 +67,36 @@ const App = {
 
     if (isLoggedIn) {
       if (loginOverlay) loginOverlay.classList.add("hidden");
+
+      // SWR 極速秒開：若本機已有快取，0.0 秒直接渲染進主畫面，完全不需等待全螢幕轉圈！
+      const cached = localStorage.getItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2");
+      if (cached) {
+        try {
+          const cachedData = JSON.parse(cached);
+          if (cachedData && cachedData.currentUser) {
+            this.applyBootstrapData(cachedData);
+            this.renderHeader();
+            this.navigate(this.state.currentView || "dashboard");
+            this.hideLoading();
+
+            // 背景無感靜默向雲端 Google Sheet 取得最新資料
+            this.loadData(null, true).then(() => {
+              this.renderHeader();
+              this.renderCurrentView();
+            }).catch(e => console.warn("背景同步暫態延遲:", e));
+            return;
+          }
+        } catch (e) {
+          console.warn("解析本機快取失敗，改採標準雲端載入:", e);
+        }
+      }
+
+      // 初次登入或無快取時，顯示載入遮罩
       this.showLoading("系統身分驗證中...", "正在載入個人差勤額度與差勤紀錄資料庫...");
       try {
         await this.loadData();
         this.renderHeader();
-        this.navigate(this.state.currentView);
+        this.navigate(this.state.currentView || "dashboard");
       } catch (err) {
         console.error("載入資料失敗:", err);
         this.showToast("資料讀取異常，請重新整理或重新登入。", "error");
@@ -208,6 +233,7 @@ const App = {
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID);
     sessionStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
+    localStorage.removeItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2");
     this.state.currentUser = null;
 
     // 清除 Header 與畫面上的個人資訊
@@ -230,14 +256,33 @@ const App = {
   },
 
   /**
-   * 載入資料 (從 API 或 Local Mock)
+   * 套用啟動資料狀態 (供 SWR 快取即時套用)
    */
-  async loadData(userId = null) {
+  applyBootstrapData(data) {
+    if (!data) return;
+    if (data.currentUser) this.state.currentUser = data.currentUser;
+    if (data.users) this.state.users = data.users;
+    if (data.leaveTypes) this.state.leaveTypes = data.leaveTypes;
+    if (data.requests) this.state.requests = data.requests;
+    if (data.overtimes) this.state.overtimes = data.overtimes;
+    if (data.balances) this.state.balances = data.balances;
+    if (data.logs) this.state.logs = data.logs;
+    if (data.holidays) this.state.holidays = data.holidays;
+    if (data.config) this.state.config = data.config;
+    if (data.currentUser && data.currentUser.id) {
+      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID, data.currentUser.id);
+    }
+  },
+
+  /**
+   * 載入資料 (從 API 或 Local Mock，支援 SWR 背景無感同步)
+   */
+  async loadData(userId = null, isSilent = false) {
     const activeId = userId || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID) || "EMP001";
     const token = sessionStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN) || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
     const res = await ApiService.getBootstrapData(activeId, token);
     
-    if (res && res.isOfflineFallback) {
+    if (res && res.isOfflineFallback && !isSilent) {
       const reasonText = res.offlineReason ? ` (${res.offlineReason})` : "";
       this.showToast(`⚠️ 雲端資料庫連線失敗${reasonText}，目前顯示本機暫存！`, "warning");
     }
@@ -287,6 +332,21 @@ const App = {
       this.state.config = res.data.config;
       
       localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID, this.state.currentUser.id);
+
+      // 儲存至本機 SWR 快取，下次開起直接 0.0 秒呈現
+      try {
+        localStorage.setItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2", JSON.stringify({
+          currentUser: this.state.currentUser,
+          users: this.state.users,
+          leaveTypes: this.state.leaveTypes,
+          requests: this.state.requests,
+          overtimes: this.state.overtimes,
+          balances: this.state.balances,
+          logs: this.state.logs,
+          holidays: this.state.holidays,
+          config: this.state.config
+        }));
+      } catch (e) {}
     }
   },
 
@@ -485,9 +545,15 @@ const App = {
 
     switch (conn.status) {
       case "online":
-        text.textContent = "Google Sheet 已連線";
-        const timeStr = conn.lastSyncTime ? LeaveEngine.formatDateTime(conn.lastSyncTime) : "";
-        dot.parentElement.title = `雲端連線正常！\n最後同步時間：${timeStr}\n端點：${conn.url}`;
+        if (conn.apiVersion && conn.apiVersion !== "legacy") {
+          text.textContent = "Google Sheet 已連線";
+          const timeStr = conn.lastSyncTime ? LeaveEngine.formatDateTime(conn.lastSyncTime) : "";
+          dot.parentElement.title = `雲端連線正常 (最新後端 ${conn.apiVersion})！\n最後同步時間：${timeStr}\n端點：${conn.url}`;
+        } else {
+          text.textContent = "Google Sheet (舊版後端)";
+          const timeStr = conn.lastSyncTime ? LeaveEngine.formatDateTime(conn.lastSyncTime) : "";
+          dot.parentElement.title = `⚠️ 已連線，但雲端 GAS 目前執行舊版！\n請至 Google Apps Script 建立新版本部署即可生效極速模式。\n最後同步：${timeStr}`;
+        }
         break;
       case "error":
         dot.classList.add("error");

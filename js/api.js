@@ -7,6 +7,7 @@ const ApiService = {
   _connectionStatus: "unknown", // "online" | "offline" | "error" | "connecting"
   _lastSyncTime: null,
   _lastError: null,
+  _remoteApiVersion: null,
 
   getConnectionStatus() {
     return {
@@ -15,6 +16,7 @@ const ApiService = {
       lastError: this._lastError,
       isRemote: this.isUsingRemoteGas(),
       url: this.getGasUrl(),
+      apiVersion: this._remoteApiVersion,
       isCustomOverride: localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true"
     };
   },
@@ -160,6 +162,12 @@ const ApiService = {
             throw new Error("Google Apps Script 回傳網頁 (請確認 Web App 存取權限是否設為『所有人 Anyone』)");
           }
           throw new Error("無法解析伺服器回應 (" + jsonErr.message + ")");
+        }
+
+        if (result && result.apiVersion) {
+          this._remoteApiVersion = result.apiVersion;
+        } else {
+          this._remoteApiVersion = "legacy";
         }
 
         this.setConnectionStatus("online");
