@@ -686,9 +686,16 @@ const App = {
             <i class="fa-solid fa-xmark"></i> 撤銷
           </button>`;
         } else if (req.status === "APPROVED") {
-          actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--purple);" onclick="App.handleCancelClick('${req.id}', 'APPROVED')">
-            <i class="fa-solid fa-arrow-rotate-left"></i> 銷假
-          </button>`;
+          const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(req);
+          if (expiryInfo.isExpired) {
+            actionBtn = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${expiryInfo.expiryDateStr} 截止)" style="opacity: 0.5; cursor: not-allowed; font-size: 0.78rem;">
+              <i class="fa-solid fa-clock-rotate-left"></i> 銷假逾期
+            </button>`;
+          } else {
+            actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--purple);" title="請假日期後 7 天內可銷假 (時限至 ${expiryInfo.expiryDateStr} 截止)" onclick="App.handleCancelClick('${req.id}', 'APPROVED')">
+              <i class="fa-solid fa-arrow-rotate-left"></i> 銷假
+            </button>`;
+          }
         } else {
           actionBtn = `<span style="font-size: 0.8rem; color: var(--text-muted);">-</span>`;
         }
@@ -1571,8 +1578,17 @@ const App = {
       modalTitle.textContent = "撤銷請假申請";
       modalPrompt.innerHTML = `確定要撤銷請假單 <strong>${requestId}</strong> 嗎？<br>撤銷後系統將<strong>立即釋放鎖定之額度</strong>。`;
     } else if (currentStatus === "APPROVED") {
+      const targetReq = (this.state.requests || []).find(r => r.id === requestId);
+      if (targetReq) {
+        const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(targetReq);
+        if (expiryInfo.isExpired) {
+          this.showToast(`⚠️ 請假單 ${requestId} 已超過請假日期後 7 天銷假時限 (時限至 ${expiryInfo.expiryDateStr} 截止)，無法進行銷假。`, "error");
+          return;
+        }
+      }
       modalTitle.textContent = "送出銷假申請";
-      modalPrompt.innerHTML = `請假單 <strong>${requestId}</strong> 已核准。<br>送出銷假申請後需經主管/人資審核，審核通過將<strong>全數退還已扣除之假別額度</strong>。`;
+      const expDateText = targetReq ? LeaveEngine.checkCancelLeaveExpiry(targetReq).expiryDateStr : "";
+      modalPrompt.innerHTML = `請假單 <strong>${requestId}</strong> 已核准。<br>送出銷假申請後需經主管/人資審核，審核通過將<strong>全數退還已扣除之假別額度</strong>。<br><span style="font-size: 0.8rem; color: var(--text-muted);"><i class="fa-solid fa-circle-info"></i> 銷假時效說明：請假日期後 7 天即失效${expDateText ? ` (本單時限至 <strong>${expDateText}</strong>)` : ""}。</span>`;
     }
 
     document.getElementById("cancelModal").classList.add("active");
@@ -1583,6 +1599,16 @@ const App = {
     if (!this.state.activeActionItem) return;
     const { requestId } = this.state.activeActionItem;
     const user = this.state.currentUser;
+
+    const targetReq = (this.state.requests || []).find(r => r.id === requestId);
+    if (targetReq && targetReq.status === "APPROVED") {
+      const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(targetReq);
+      if (expiryInfo.isExpired) {
+        this.showToast(`⚠️ 請假單 ${requestId} 已超過請假日期後 7 天銷假時限，無法銷假！`, "error");
+        return;
+      }
+    }
+
     const reason = document.getElementById("cancelReasonInput").value.trim();
 
     if (!reason) {
@@ -2108,7 +2134,12 @@ const App = {
         if (item.status === "PENDING") {
           actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--danger); padding: 3px 8px; font-size: 0.78rem;" onclick="App.handleCancelClick('${item.id}', 'PENDING')"><i class="fa-solid fa-ban"></i> 撤銷</button>`;
         } else if (item.status === "APPROVED") {
-          actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--primary); padding: 3px 8px; font-size: 0.78rem;" onclick="App.handleCancelClick('${item.id}', 'APPROVED')"><i class="fa-solid fa-arrow-rotate-left"></i> 銷假</button>`;
+          const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(item);
+          if (expiryInfo.isExpired) {
+            actionHtml = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${expiryInfo.expiryDateStr} 截止)" style="opacity: 0.5; cursor: not-allowed; padding: 3px 8px; font-size: 0.78rem;"><i class="fa-solid fa-clock-rotate-left"></i> 銷假逾期</button>`;
+          } else {
+            actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--primary); padding: 3px 8px; font-size: 0.78rem;" title="請假日期後 7 天內可銷假 (時限至 ${expiryInfo.expiryDateStr} 截止)" onclick="App.handleCancelClick('${item.id}', 'APPROVED')"><i class="fa-solid fa-arrow-rotate-left"></i> 銷假</button>`;
+          }
         }
       }
 

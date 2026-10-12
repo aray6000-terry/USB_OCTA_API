@@ -22,6 +22,7 @@ const CONFIG = {
   LUNCH_END: "13:30",
   DAILY_WORK_HOURS: 8.0,
   MULTI_TIER_THRESHOLD_HOURS: 24.0, // 超過 24 小時 (3天) 需 HR 雙簽
+  CANCEL_LEAVE_EXPIRY_DAYS: 7, // 銷假時效：請假日期後 7 天即失效
   SHEETS: {
     USERS: "users",
     LEAVE_TYPES: "leave_types",
@@ -1277,6 +1278,7 @@ function cancelLeave(params) {
   const statusIdx = reqHeaders.indexOf("status");
   const stepIdx = reqHeaders.indexOf("current_step");
   const startIdx = reqHeaders.indexOf("start_time");
+  const endIdx = reqHeaders.indexOf("end_time");
 
   let targetRow = -1;
   let requestObj = null;
@@ -1290,7 +1292,8 @@ function cancelLeave(params) {
         leaveTypeId: reqData[i][typeIdx],
         totalHours: parseFloat(reqData[i][hoursIdx]) || 0,
         status: reqData[i][statusIdx],
-        startTime: reqData[i][startIdx]
+        startTime: reqData[i][startIdx],
+        endTime: endIdx !== -1 ? reqData[i][endIdx] : reqData[i][startIdx]
       };
       break;
     }
@@ -1316,8 +1319,33 @@ function cancelLeave(params) {
     return { success: true, message: "申請單已成功撤銷，鎖定額度已全數釋放！" };
   }
 
-  // 情況二：已核准 (APPROVED) -> 進入銷假申請流程 (CANCEL_PENDING)
+  // 情況二：已核准 (APPROVED) -> 檢核是否已逾期 (請假日期後 7 天失效)
   if (requestObj.status === "APPROVED") {
+    const leaveTimeStr = requestObj.endTime || requestObj.startTime;
+    if (leaveTimeStr) {
+      let datePart = "";
+      if (leaveTimeStr instanceof Date) {
+        datePart = Utilities.formatDate(leaveTimeStr, "Asia/Taipei", "yyyy-MM-dd");
+      } else {
+        datePart = String(leaveTimeStr).split(" ")[0].replace(/\//g, "-");
+      }
+      const parts = datePart.split("-").map(Number);
+      if (parts.length >= 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+        // 請假末日當天 23:59:59.999
+        const leaveEndDay = new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999);
+        const limitDays = CONFIG.CANCEL_LEAVE_EXPIRY_DAYS || 7;
+        const expiryTime = leaveEndDay.getTime() + limitDays * 24 * 60 * 60 * 1000;
+        if (Date.now() > expiryTime) {
+          const expDate = new Date(expiryTime);
+          const expStr = Utilities.formatDate(expDate, "Asia/Taipei", "yyyy-MM-dd");
+          return {
+            success: false,
+            message: `此請假單已超過請假日期後 ${limitDays} 天之銷假期限 (銷假期限至 ${expStr} 截止)，無法送出銷假申請。`
+          };
+        }
+      }
+    }
+
     reqSheet.getRange(targetRow, statusIdx + 1).setValue("CANCEL_PENDING");
     reqSheet.getRange(targetRow, stepIdx + 1).setValue("MANAGER");
 

@@ -100,4 +100,34 @@ assert(LeaveEngine.isSystemAdmin({ id: "EMP003", role: "HR", department_name: "�
 assert(LeaveEngine.isSystemAdmin({ id: "EMP010", role: "人資", department_name: "人資部" }) === false, "人資角色不應具備系統後端串接權限 (應隱藏)");
 assert(LeaveEngine.isSystemAdmin({ id: "EMP005", role: "Employee", department_name: "研發部" }) === false, "一般員工不應具備系統管理者權限");
 
-console.log("🎉 所有業務核心邏輯、勞基法【歷年制】特休與角色權限劃分單元測試全數通過！");
+// 測試 16: 銷假功能時效驗證 (請假日期後 7 天失效)
+const sampleLeave = {
+  id: "REQ-TEST-001",
+  start_time: "2026-10-05 08:30",
+  end_time: "2026-10-05 18:00",
+  status: "APPROVED"
+};
+// 16.1 請假後 3 天 (2026-10-08) -> 應可銷假
+const expCheckDay3 = LeaveEngine.checkCancelLeaveExpiry(sampleLeave, new Date("2026-10-08 12:00"));
+assert(expCheckDay3.isExpired === false, "請假後 3 天內應可銷假 (尚未逾期)");
+assert(expCheckDay3.expiryDateStr === "2026-10-12", `銷假截止日應為 2026-10-12，實際值: ${expCheckDay3.expiryDateStr}`);
+
+// 16.2 請假後第 7 天當天 (2026-10-12 20:00) -> 應可銷假 (當天 23:59:59 截止)
+const expCheckDay7 = LeaveEngine.checkCancelLeaveExpiry(sampleLeave, new Date("2026-10-12 20:00"));
+assert(expCheckDay7.isExpired === false, "請假後第 7 天當天應可銷假 (尚未逾期)");
+
+// 16.3 請假後第 8 天 (2026-10-13 09:00) -> 應失效逾期
+const expCheckDay8 = LeaveEngine.checkCancelLeaveExpiry(sampleLeave, new Date("2026-10-13 09:00"));
+assert(expCheckDay8.isExpired === true, "請假日期後第 8 天銷假功能應判定為失效逾期");
+
+// 16.4 未來尚未發生的請假 (2026-10-25) -> 應可銷假
+const futureLeave = {
+  id: "REQ-TEST-FUTURE",
+  start_time: "2026-10-25 08:30",
+  end_time: "2026-10-25 18:00",
+  status: "APPROVED"
+};
+const futureCheck = LeaveEngine.checkCancelLeaveExpiry(futureLeave, new Date("2026-10-12 09:00"));
+assert(futureCheck.isExpired === false, "未來的請假單銷假功能應有效 (尚未逾期)");
+
+console.log("🎉 所有業務核心邏輯、勞基法【歷年制】特休、角色權限劃分與【7天銷假時效】單元測試全數通過！");

@@ -381,5 +381,46 @@ const LeaveEngine = {
       role === "主管" ||
       role === "部門主管"
     );
+  },
+
+  /**
+   * 檢核請假單銷假功能是否已逾期失效 (請假日期後 7 天失效)
+   * @param {Object} req 請假單物件 (需包含 end_time 或 start_time)
+   * @param {Date} [now=new Date()] 當前比對基準時間 (預設當前時間)
+   * @returns {Object} { isExpired: boolean, expiryDate: Date, expiryDateStr: string, daysRemaining: number }
+   */
+  checkCancelLeaveExpiry(req, now = new Date()) {
+    if (!req) return { isExpired: false, expiryDate: null, expiryDateStr: "", daysRemaining: 0 };
+    const leaveTime = req.end_time || req.start_time;
+    if (!leaveTime) return { isExpired: false, expiryDate: null, expiryDateStr: "", daysRemaining: 0 };
+
+    const datePart = String(leaveTime).split(" ")[0].replace(/\//g, "-");
+    const parts = datePart.split("-").map(Number);
+    if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) {
+      return { isExpired: false, expiryDate: null, expiryDateStr: "", daysRemaining: 0 };
+    }
+
+    // 請假末日當天 23:59:59.999 為起算基準
+    const leaveEndDay = new Date(parts[0], parts[1] - 1, parts[2], 23, 59, 59, 999);
+    const limitDays = (typeof SYSTEM_CONFIG !== "undefined" && SYSTEM_CONFIG.CANCEL_LEAVE_EXPIRY_DAYS) ? SYSTEM_CONFIG.CANCEL_LEAVE_EXPIRY_DAYS : 7;
+    const expiryTime = leaveEndDay.getTime() + limitDays * 24 * 60 * 60 * 1000;
+    const expiryDate = new Date(expiryTime);
+
+    const checkTime = (now instanceof Date) ? now.getTime() : new Date(now).getTime();
+    const isExpired = checkTime > expiryTime;
+    const diffMs = expiryTime - checkTime;
+    const daysRemaining = isExpired ? 0 : Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+
+    const expYear = expiryDate.getFullYear();
+    const expMonth = ("0" + (expiryDate.getMonth() + 1)).slice(-2);
+    const expDay = ("0" + expiryDate.getDate()).slice(-2);
+    const expiryDateStr = expYear + "-" + expMonth + "-" + expDay;
+
+    return {
+      isExpired,
+      expiryDate,
+      expiryDateStr,
+      daysRemaining
+    };
   }
 };

@@ -502,8 +502,16 @@ const ApiService = {
           return { success: true, message: "已成功撤銷請假申請，鎖定之額度已釋放！" };
         }
 
-        // 已核准發起銷假
+        // 已核准發起銷假 (需檢核是否在請假日期後 7 天內)
         if (req.status === "APPROVED") {
+          const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(req);
+          if (expiryInfo.isExpired) {
+            return {
+              success: false,
+              message: `此請假單已超過請假日期後 7 天之銷假有效期限 (銷假期限至 ${expiryInfo.expiryDateStr} 截止)，無法送出銷假申請。`
+            };
+          }
+
           req.status = "CANCEL_PENDING";
           req.current_step = "MANAGER";
 

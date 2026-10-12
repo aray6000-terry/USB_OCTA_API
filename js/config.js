@@ -14,6 +14,9 @@ const SYSTEM_CONFIG = {
   // 多階審核門檻：申請時數超過 24 小時 (3 天) 需進入 HR 雙簽
   MULTI_TIER_THRESHOLD_HOURS: 24.0,
 
+  // 銷假有效時限：請假日期後 7 天即失效
+  CANCEL_LEAVE_EXPIRY_DAYS: 7,
+
   // 預設年份
   CURRENT_YEAR: 2026,
 
