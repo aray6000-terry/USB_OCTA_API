@@ -25,9 +25,14 @@ const BACKUP_CONFIG = {
   FOLDER_ID: "1WOS5oFhmpWN7fHUySonmUDNgVlYzjDeb",   // Google Drive「請假系統」資料夾
   LOG_NAME: "版本紀錄",
   // 第一次執行 backupHistoryToDrive 時要補備份的歷史版本 (舊 → 新)
-  INITIAL_COMMITS: ["759d612", "46d3686", "cd6a419"],
-  // 若之後把 GitHub repo 改成 Private：在「專案設定 > 指令碼屬性」新增 GITHUB_TOKEN (唯讀權限即可)
-  TOKEN_PROPERTY: "GITHUB_TOKEN"
+  INITIAL_COMMITS: ["759d612", "46d3686", "cd6a419", "d0cb8e5"],
+  // 版本中文說明 (沒有列在這裡的版本會使用 GitHub 上的 commit 說明)
+  NOTES: {
+    "759d612": "原始版本（新增請假日期後 7 天銷假失效限制）",
+    "46d3686": "資安修正：後端強制登入驗證、密碼雜湊、簽核權限檢查、移除後門",
+    "cd6a419": "XSS 防護、跨年度額度自動建立、婚喪產假可申請、特休算法前後端統一",
+    "d0cb8e5": "新增 GitHub → Google Drive 每日版本備份"
+  }
 };
 
 /** 每天自動備份 (台北時間凌晨 2 點左右) */
@@ -54,55 +59,74 @@ function backupLatestToDrive() {
 }
 
 // ---------------------------------------------------------------
+// 說明：不使用 api.github.com (Apps Script 共用 IP，匿名額度常被其他人用完而出現 403)，
+// 改用 GitHub 公開的 commit 動態 (Atom) 與原始碼壓縮檔下載連結，不受 API 次數限制。
 
 function backupCommitToDrive_(ref) {
-  const commit = githubJson_(`/repos/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/commits/${encodeURIComponent(ref)}`);
-  const sha = commit.sha;
-  const short = sha.substring(0, 7);
-  const log = getOrCreateLog_();
+  const commits = listRecentCommits_();
+  const commit = (ref === BACKUP_CONFIG.BRANCH) ? commits[0] : commits.find(c => c.sha.indexOf(ref) === 0);
+  if (!commit) return `找不到版本 ${ref}（只能備份最近 20 個版本）`;
 
-  // 已備份過就略過
+  const short = commit.sha.substring(0, 7);
+  const log = getOrCreateLog_();
   const done = log.getDataRange().getValues().some(r => String(r[2]) === short);
   if (done) return `略過 ${short}：已經備份過`;
 
-  const when = new Date(commit.commit.committer.date);
-  const folderName = Utilities.formatDate(when, "Asia/Taipei", "yyyy-MM-dd_HHmm") + "_" + short;
-  const root = DriveApp.getFolderById(BACKUP_CONFIG.FOLDER_ID);
-  const versionFolder = root.createFolder(folderName);
+  // 下載該版本完整原始碼 zip
+  const zipUrl = `https://codeload.github.com/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/zip/${commit.sha}`;
+  const res = UrlFetchApp.fetch(zipUrl, { muteHttpExceptions: true, followRedirects: true });
+  if (res.getResponseCode() !== 200) {
+    throw new Error(`下載原始碼失敗 (HTTP ${res.getResponseCode()})。若 repo 已改為 Private，需改用 GitHub Token。`);
+  }
+  const zipBlob = res.getBlob().setName(`原始碼_${short}.zip`).setContentType("application/zip");
 
-  // 取得該版本所有檔案清單
-  const tree = githubJson_(`/repos/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/git/trees/${sha}?recursive=1`);
-  const blobsForZip = [];
+  const folderName = Utilities.formatDate(commit.date, "Asia/Taipei", "yyyy-MM-dd_HHmm") + "_" + short;
+  const versionFolder = DriveApp.getFolderById(BACKUP_CONFIG.FOLDER_ID).createFolder(folderName);
+  versionFolder.createFile(zipBlob);
+
+  // 解壓縮並保留原本的目錄結構 (去掉 zip 內最外層的 REPO-sha/ 資料夾)
   const folderCache = { "": versionFolder };
   let count = 0;
-
-  tree.tree.filter(n => n.type === "blob").forEach(n => {
-    const parts = n.path.split("/");
+  Utilities.unzip(zipBlob.copyBlob()).forEach(b => {
+    const full = b.getName();
+    if (/\/$/.test(full)) return; // 資料夾項目
+    const parts = full.split("/").slice(1);
+    if (!parts.length || !parts[parts.length - 1]) return;
     const fileName = parts.pop();
-    const dir = getSubFolder_(versionFolder, folderCache, parts);
-    const blob = fetchRaw_(sha, n.path).setName(fileName);
-    dir.createFile(blob);
-    blobsForZip.push(blob.copyBlob().setName(n.path));
+    getSubFolder_(versionFolder, folderCache, parts).createFile(b.setName(fileName));
     count++;
   });
 
-  // 整包 zip 方便下載
-  versionFolder.createFile(Utilities.zip(blobsForZip, `原始碼_${short}.zip`));
-
-  const title = String(commit.commit.message || "").split("\n")[0];
-  const version = "v" + (log.getLastRow()); // 第 1 列是標題，所以第一個版本為 v1
+  const note = BACKUP_CONFIG.NOTES[short] || commit.title;
+  const version = "v" + log.getLastRow(); // 第 1 列是標題，第一個版本為 v1
   log.appendRow([
     version,
-    Utilities.formatDate(when, "Asia/Taipei", "yyyy-MM-dd HH:mm"),
+    Utilities.formatDate(commit.date, "Asia/Taipei", "yyyy-MM-dd HH:mm"),
     short,
-    title,
+    note,
     count,
     versionFolder.getUrl(),
-    `https://github.com/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/commit/${sha}`,
+    `https://github.com/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/commit/${commit.sha}`,
     Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm")
   ]);
+  return `已備份 ${version} ${short}「${note}」共 ${count} 個檔案 → ${folderName}`;
+}
 
-  return `已備份 ${version} ${short}「${title}」共 ${count} 個檔案 → ${folderName}`;
+// 讀取 GitHub 公開的 commit 動態 (最新在前，最多 20 筆)
+function listRecentCommits_() {
+  const url = `https://github.com/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/commits/${BACKUP_CONFIG.BRANCH}.atom`;
+  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) throw new Error(`讀取 GitHub 版本清單失敗 (HTTP ${res.getResponseCode()})`);
+  const atom = XmlService.getNamespace("http://www.w3.org/2005/Atom");
+  const entries = XmlService.parse(res.getContentText()).getRootElement().getChildren("entry", atom);
+  return entries.map(e => {
+    const id = e.getChildText("id", atom) || "";
+    return {
+      sha: (id.match(/[0-9a-f]{40}/) || [""])[0],
+      title: (e.getChildText("title", atom) || "").trim(),
+      date: new Date(e.getChildText("updated", atom))
+    };
+  }).filter(c => c.sha);
 }
 
 function getSubFolder_(base, cache, parts) {
@@ -132,27 +156,4 @@ function getOrCreateLog_() {
     sh.setFrozenRows(1);
   }
   return sh;
-}
-
-function githubHeaders_() {
-  const token = PropertiesService.getScriptProperties().getProperty(BACKUP_CONFIG.TOKEN_PROPERTY);
-  const h = { "Accept": "application/vnd.github+json", "User-Agent": "leave-system-drive-backup" };
-  if (token) h.Authorization = "Bearer " + token;
-  return h;
-}
-
-function githubJson_(path) {
-  const res = UrlFetchApp.fetch("https://api.github.com" + path, { headers: githubHeaders_(), muteHttpExceptions: true });
-  if (res.getResponseCode() !== 200) {
-    throw new Error(`GitHub API ${res.getResponseCode()}：${res.getContentText().substring(0, 200)}`);
-  }
-  return JSON.parse(res.getContentText());
-}
-
-function fetchRaw_(sha, path) {
-  const url = `https://raw.githubusercontent.com/${BACKUP_CONFIG.OWNER}/${BACKUP_CONFIG.REPO}/${sha}/` +
-    path.split("/").map(encodeURIComponent).join("/");
-  const res = UrlFetchApp.fetch(url, { headers: githubHeaders_(), muteHttpExceptions: true });
-  if (res.getResponseCode() !== 200) throw new Error(`下載失敗 ${path}：HTTP ${res.getResponseCode()}`);
-  return res.getBlob();
 }
