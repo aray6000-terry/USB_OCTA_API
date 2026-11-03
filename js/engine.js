@@ -161,96 +161,60 @@ const LeaveEngine = {
    * @param {number|Date} asOfYearOrDate 結算年度 (數字如 2026 或 Date)
    * @returns {Object} { year, years, months, totalMonths, days, hours, tierDesc, seniorityText, description }
    */
-  calculateStatutoryAnnualLeave(hireDate, asOfYearOrDate = 2026) {
-    const targetYear = typeof asOfYearOrDate === "number" ? asOfYearOrDate : (asOfYearOrDate instanceof Date ? asOfYearOrDate.getFullYear() : 2026);
+  calculateStatutoryAnnualLeave(hireDate, asOfYearOrDate = SYSTEM_CONFIG.CURRENT_YEAR) {
+    const targetYear = typeof asOfYearOrDate === "number" ? asOfYearOrDate : (asOfYearOrDate instanceof Date ? asOfYearOrDate.getFullYear() : SYSTEM_CONFIG.CURRENT_YEAR);
     if (!hireDate) return { year: targetYear, years: 0, months: 0, totalMonths: 0, days: 0, hours: 0, tierDesc: "--", seniorityText: "--", description: "尚未設定到職日" };
 
-    const h = new Date(hireDate);
-    if (isNaN(h.getTime())) {
+    // 以本地日期解析 (避免 new Date("YYYY-MM-DD") 被當成 UTC 而差一天)
+    const toLocal = v => {
+      if (v instanceof Date) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+      const m = String(v || "").match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    };
+    const h = toLocal(hireDate);
+    if (!h) {
       return { year: targetYear, years: 0, months: 0, totalMonths: 0, days: 0, hours: 0, tierDesc: "--", seniorityText: "--", description: "到職日無效" };
     }
+    const addMonths = (d, n) => {
+      const last = new Date(d.getFullYear(), d.getMonth() + n + 1, 0).getDate();
+      return new Date(d.getFullYear(), d.getMonth() + n, Math.min(d.getDate(), last));
+    };
+    const daysForServiceYear = n => n < 1 ? 0 : n === 1 ? 7 : n === 2 ? 10 : n <= 4 ? 14 : n <= 9 ? 15 : Math.min(30, 15 + (n - 9));
 
-    const yearStart = new Date(targetYear, 0, 1);
-    const yearEnd = new Date(targetYear, 11, 31);
-    const totalYearDays = Math.round((yearEnd - yearStart) / (1000 * 60 * 60 * 24)) + 1; // 365 或 366 天
-
-    if (h > yearEnd) {
-      return {
-        year: targetYear,
-        years: 0,
-        months: 0,
-        totalMonths: 0,
-        days: 0,
-        hours: 0,
-        tierDesc: "該年度尚未到職",
-        seniorityText: "未到職",
-        description: `員工於 ${LeaveEngine.formatDateOnly(h)} 到職，在 ${targetYear} 年度尚未起算年資。`
-      };
+    if (h.getFullYear() > targetYear) {
+      return { year: targetYear, years: 0, months: 0, totalMonths: 0, days: 0, hours: 0, tierDesc: "該年度尚未到職", seniorityText: "未到職",
+        description: `員工於 ${LeaveEngine.formatDateOnly(h)} 到職，在 ${targetYear} 年度尚未起算年資。` };
     }
 
-    // 截至當年度 12/31 之累計年資
-    let years = targetYear - h.getFullYear();
-    let months = 11 - h.getMonth();
-    let daysDiff = 31 - h.getDate();
-    if (daysDiff < 0) months -= 1;
-    if (months < 0) {
-      years -= 1;
-      months += 12;
+    // 截至當年度 12/31 之累計年資 (顯示用)
+    const yearEndDate = new Date(targetYear, 11, 31);
+    let totalMonths = (yearEndDate.getFullYear() - h.getFullYear()) * 12 + (yearEndDate.getMonth() - h.getMonth());
+    if (yearEndDate.getDate() < h.getDate()) totalMonths -= 1;
+    totalMonths = Math.max(0, totalMonths);
+    const years = Math.floor(totalMonths / 12), months = totalMonths % 12;
+
+    // 與後端 Code.gs calculateStatutoryAnnualLeaveHours 完全相同的算法
+    const DAY = 86400000, yStart = new Date(targetYear, 0, 1).getTime(), yEnd = new Date(targetYear + 1, 0, 1).getTime();
+    const parts = [];
+    let rawDays = 0;
+    const six = addMonths(h, 6);
+    if (six.getFullYear() === targetYear) {
+      rawDays += 3;
+      parts.push(`滿半年 3 天 (${LeaveEngine.formatDateOnly(six)} 起)`);
     }
-    const totalMonths = Math.max(0, years * 12 + months);
-
-    // 勞基法週年法定基準天數表
-    function getAnniversaryDays(n) {
-      if (n < 0.5) return 0;
-      if (n >= 0.5 && n < 1) return 3;
-      if (n === 1) return 7;
-      if (n === 2) return 10;
-      if (n === 3 || n === 4) return 14;
-      if (n >= 5 && n < 10) return 15;
-      if (n >= 10) return Math.min(30, 15 + (n - 9));
-      return 0;
-    }
-
-    let statutoryDays = 0;
-    let formulaDesc = "";
-
-    // 1. 若為當年度內到職
-    if (h.getFullYear() === targetYear) {
-      const sixMonthDate = new Date(h);
-      sixMonthDate.setMonth(sixMonthDate.getMonth() + 6);
-      if (sixMonthDate <= yearEnd) {
-        statutoryDays = 3.0;
-        formulaDesc = `當年度滿半年取得 3 天 (${LeaveEngine.formatDateOnly(sixMonthDate)} 起可休)`;
-      } else {
-        statutoryDays = 0.0;
-        formulaDesc = "當年度未滿 6 個月：0 天";
+    for (let n = 1; n <= 60; n++) {
+      const pS = addMonths(h, 12 * n).getTime(), pE = addMonths(h, 12 * (n + 1)).getTime();
+      if (pS >= yEnd) break;
+      const ov = Math.min(pE, yEnd) - Math.max(pS, yStart);
+      if (ov > 0) {
+        const share = daysForServiceYear(n) * (Math.round(ov / DAY) / Math.round((pE - pS) / DAY));
+        rawDays += share;
+        parts.push(`滿${n}年 ${daysForServiceYear(n)} 天 × 比例 = ${share.toFixed(2)} 天`);
       }
-    } else {
-      // 2. 前一年度或更早到職：以到職週年日切分前後段比例
-      const anniversary = new Date(targetYear, h.getMonth(), h.getDate());
-      const priorYears = targetYear - h.getFullYear() - 1; // 1/1~週年日前之完整年資
-      const nextYears = priorYears + 1; // 週年日後之完整年資
-
-      const d1 = Math.max(0, Math.floor((anniversary - yearStart) / (1000 * 60 * 60 * 24)));
-      const d2 = totalYearDays - d1;
-
-      let part1Days = 0;
-      if (priorYears === 0) {
-        const sixMonthDate = new Date(h);
-        sixMonthDate.setMonth(sixMonthDate.getMonth() + 6);
-        part1Days = (sixMonthDate <= yearStart) ? 3.0 : 0.0;
-      } else {
-        part1Days = getAnniversaryDays(priorYears) * (d1 / totalYearDays);
-      }
-
-      const part2Days = getAnniversaryDays(nextYears) * (d2 / totalYearDays);
-      const totalRaw = part1Days + part2Days;
-      statutoryDays = Math.round(totalRaw * 10) / 10;
-
-      formulaDesc = `歷年制分段：前段(${priorYears}年: ${part1Days.toFixed(1)}天) + 後段(${nextYears}年: ${part2Days.toFixed(1)}天) = ${statutoryDays} 天`;
     }
-
-    const statutoryHours = Math.round(statutoryDays * 8.0 * 10) / 10;
+    const statutoryHours = Math.ceil(rawDays * 8 * 2 - 1e-9) / 2;
+    const statutoryDays = Math.round((statutoryHours / 8) * 100) / 100;
+    const formulaDesc = parts.length ? `歷年制：${parts.join(" ＋ ")}` : "當年度尚未滿 6 個月：0 天";
 
     return {
       year: targetYear,

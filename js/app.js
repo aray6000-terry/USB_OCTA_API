@@ -1,6 +1,33 @@
 /**
  * 智慧請假與補休管理系統 - 主應用程式核心控制器 (Main Application Controller)
  */
+
+// ======================== 安全輸出工具 (XSS 防護) ========================
+// 任何使用者 / 伺服器提供的資料放入 innerHTML 或 HTML 模板前都必須經過 esc()
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 放入 inline onclick="..." 的參數：先轉為 JS 字串常值，再做 HTML 屬性跳脫 (使用時不要再外包引號)
+const jsArg = v => esc(JSON.stringify(String(v ?? "")));
+// 僅允許 http: / https: 協定之附件網址，其餘一律回傳 null
+const safeHttpUrl = u => {
+  try {
+    const parsed = new URL(String(u ?? "").trim());
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") ? parsed.href : null;
+  } catch (e) {
+    return null;
+  }
+};
+// 附件顯示：合法 http(s) 網址才產生連結，否則以跳脫後純文字呈現
+const renderAttachmentHtml = (url, linkInnerHtml, linkStyle, textStyle) => {
+  if (!url) return "";
+  const safe = safeHttpUrl(url);
+  if (safe) {
+    return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">${linkInnerHtml}</a>`;
+  }
+  return `<span style="${textStyle}">${esc(url)}</span>`;
+};
+
+const BOOTSTRAP_CACHE_KEY = "LEAVE_SYS_BOOTSTRAP_CACHE_V2";
+
 const App = {
   state: {
     currentUser: null,
@@ -69,7 +96,7 @@ const App = {
       if (loginOverlay) loginOverlay.classList.add("hidden");
 
       // SWR 極速秒開：若本機已有快取，0.0 秒直接渲染進主畫面，完全不需等待全螢幕轉圈！
-      const cached = localStorage.getItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2");
+      const cached = sessionStorage.getItem(BOOTSTRAP_CACHE_KEY);
       if (cached) {
         try {
           const cachedData = JSON.parse(cached);
@@ -213,7 +240,8 @@ const App = {
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID);
     sessionStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
     localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
-    localStorage.removeItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2");
+    localStorage.removeItem(BOOTSTRAP_CACHE_KEY); // 清除舊版遺留之 localStorage 快取
+    sessionStorage.removeItem(BOOTSTRAP_CACHE_KEY);
     this.state.currentUser = null;
 
     // 清除 Header 與畫面上的個人資訊
@@ -315,7 +343,7 @@ const App = {
 
       // 儲存至本機 SWR 快取，下次開起直接 0.0 秒呈現
       try {
-        localStorage.setItem("LEAVE_SYS_BOOTSTRAP_CACHE_V2", JSON.stringify({
+        sessionStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify({
           currentUser: this.state.currentUser,
           users: this.state.users,
           leaveTypes: this.state.leaveTypes,
@@ -611,7 +639,7 @@ const App = {
       const used = Number(bal.used_hours) || 0;
       const pending = Number(bal.pending_hours) || 0;
       // 若 leave_balances 有設定總額度 (例如事假 112h, 病假 240h)，如實對應呈現額度與剩餘；若總額度為 0 則顯示無限制
-      const isExempt = (total === 0 && (typeId === "PERSONAL" || typeId === "SICK"));
+      const isExempt = (total === 0 && (typeId === "PERSONAL" || typeId === "SICK")) || ["MARRIAGE","BEREAVEMENT","MATERNITY","PATERNITY","MENSTRUAL"].indexOf(typeId) !== -1;
       const remaining = isExempt ? "不限" : Math.max(0, total - used - pending);
       const usedPercent = (!isExempt && total > 0) ? Math.min(100, Math.round(((used + pending) / total) * 100)) : (total === 0 ? 0 : 100);
       const strokeDash = isExempt ? "100, 100" : `${usedPercent}, 100`;
@@ -621,28 +649,28 @@ const App = {
       card.innerHTML = `
         <div class="balance-card-header">
           <span class="balance-card-title">
-            <span class="type-indicator-pill" style="background-color: ${typeDef.color};"></span>
-            ${typeDef.name}
+            <span class="type-indicator-pill" style="background-color: ${esc(typeDef.color)};"></span>
+            ${esc(typeDef.name)}
           </span>
-          <span class="badge ${typeDef.badgeClass || 'badge-blue'}">${(typeDef.id === 'SICK' || typeDef.isPaid === 'HALF' || typeDef.payRate === 0.5) ? '支半薪' : (typeDef.isPaid ? '有薪假' : '不支薪')}</span>
+          <span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${(typeDef.id === 'SICK' || typeDef.isPaid === 'HALF' || typeDef.payRate === 0.5) ? '支半薪' : (typeDef.isPaid ? '有薪假' : '不支薪')}</span>
         </div>
         <div class="balance-ring-wrap">
           <div class="balance-nums">
             <div>
-              <span class="balance-rem-big" style="${isExempt ? 'font-size: 1.8rem;' : ''}">${remaining}</span>
+              <span class="balance-rem-big" style="${isExempt ? 'font-size: 1.8rem;' : ''}">${esc(remaining)}</span>
               ${!isExempt ? '<span class="balance-unit">小時</span>' : ''}
             </div>
             <span class="balance-rem-label">${isExempt ? '依需求申請 (無上限)' : '剩餘可用額度'}</span>
           </div>
-          <svg viewBox="0 0 36 36" class="circular-chart" style="color: ${typeDef.color};">
+          <svg viewBox="0 0 36 36" class="circular-chart" style="color: ${esc(typeDef.color)};">
             <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-            <path class="circle" stroke="${typeDef.color}" stroke-dasharray="${strokeDash}" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+            <path class="circle" stroke="${esc(typeDef.color)}" stroke-dasharray="${esc(strokeDash)}" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
           </svg>
         </div>
         <div class="balance-card-breakdown">
-          <div class="breakdown-item">${isExempt ? '額度限制: <strong>無限制</strong>' : `總額度: <strong>${total}</strong>h`}</div>
-          <div class="breakdown-item">已使用: <strong>${used}</strong>h</div>
-          <div class="breakdown-item" style="color: #b45309;">審核鎖定: <strong>${pending}</strong>h</div>
+          <div class="breakdown-item">${isExempt ? '額度限制: <strong>無限制</strong>' : `總額度: <strong>${esc(total)}</strong>h`}</div>
+          <div class="breakdown-item">已使用: <strong>${esc(used)}</strong>h</div>
+          <div class="breakdown-item" style="color: #b45309;">審核鎖定: <strong>${esc(pending)}</strong>h</div>
         </div>
       `;
       balanceGrid.appendChild(card);
@@ -662,17 +690,17 @@ const App = {
 
         let actionBtn = "";
         if (req.status === "PENDING") {
-          actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--danger);" onclick="App.handleCancelClick('${req.id}', 'PENDING')">
+          actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--danger);" onclick="App.handleCancelClick(${jsArg(req.id)}, 'PENDING')">
             <i class="fa-solid fa-xmark"></i> 撤銷
           </button>`;
         } else if (req.status === "APPROVED") {
           const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(req);
           if (expiryInfo.isExpired) {
-            actionBtn = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${expiryInfo.expiryDateStr} 截止)" style="opacity: 0.5; cursor: not-allowed; font-size: 0.78rem;">
+            actionBtn = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${esc(expiryInfo.expiryDateStr)} 截止)" style="opacity: 0.5; cursor: not-allowed; font-size: 0.78rem;">
               <i class="fa-solid fa-clock-rotate-left"></i> 銷假逾期
             </button>`;
           } else {
-            actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--purple);" title="請假日期後 7 天內可銷假 (時限至 ${expiryInfo.expiryDateStr} 截止)" onclick="App.handleCancelClick('${req.id}', 'APPROVED')">
+            actionBtn = `<button class="btn btn-sm btn-secondary" style="color: var(--purple);" title="請假日期後 7 天內可銷假 (時限至 ${esc(expiryInfo.expiryDateStr)} 截止)" onclick="App.handleCancelClick(${jsArg(req.id)}, 'APPROVED')">
               <i class="fa-solid fa-arrow-rotate-left"></i> 銷假
             </button>`;
           }
@@ -682,13 +710,13 @@ const App = {
 
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><strong style="color: var(--primary); font-family: 'JetBrains Mono';">${req.id}</strong></td>
-          <td><span class="badge ${typeDef.badgeClass || 'badge-blue'}">${typeDef.name}</span></td>
+          <td><strong style="color: var(--primary); font-family: 'JetBrains Mono';">${esc(req.id)}</strong></td>
+          <td><span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${esc(typeDef.name)}</span></td>
           <td>
-            <div style="font-weight: 500;">${req.start_time}</div>
-            <div style="font-size: 0.8rem; color: var(--text-muted);">至 ${req.end_time}</div>
+            <div style="font-weight: 500;">${esc(req.start_time)}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">至 ${esc(req.end_time)}</div>
           </td>
-          <td><strong style="color: var(--text-main);">${req.total_hours}</strong> 小時</td>
+          <td><strong style="color: var(--text-main);">${esc(req.total_hours)}</strong> 小時</td>
           <td>${statusBadge}</td>
           <td>${actionBtn}</td>
         `;
@@ -706,11 +734,11 @@ const App = {
     compSummaryBox.innerHTML = `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
         <span style="color: var(--text-muted);">目前可用補休時數：</span>
-        <strong style="font-size: 1.35rem; color: var(--success); font-family: 'JetBrains Mono';">${compRemaining} 小時</strong>
+        <strong style="font-size: 1.35rem; color: var(--success); font-family: 'JetBrains Mono';">${esc(compRemaining)} 小時</strong>
       </div>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8rem; background: #fafafa; padding: 10px; border-radius: var(--radius-sm);">
-        <div>累積取得：<strong>${compBal.total_hours}</strong> h</div>
-        <div>已請休：<strong>${compBal.used_hours}</strong> h</div>
+        <div>累積取得：<strong>${esc(compBal.total_hours)}</strong> h</div>
+        <div>已請休：<strong>${esc(compBal.used_hours)}</strong> h</div>
       </div>
     `;
 
@@ -789,7 +817,7 @@ const App = {
     const used = bal ? Number(bal.used_hours) || 0 : 0;
     const pending = bal ? Number(bal.pending_hours) || 0 : 0;
     const available = Math.max(0, total - used - pending);
-    const isQuotaExempt = (total === 0 && (leaveTypeId === "PERSONAL" || leaveTypeId === "SICK"));
+    const isQuotaExempt = (total === 0 && (leaveTypeId === "PERSONAL" || leaveTypeId === "SICK")) || ["MARRIAGE","BEREAVEMENT","MATERNITY","PATERNITY","MENSTRUAL"].indexOf(leaveTypeId) !== -1;
 
     // 試算工時 (08:30-18:00, 午休 12:00-13:30 扣 1.5h, 扣除假日)
     const hours = LeaveEngine.calculateHours(startTime, endTime, this.state.holidays);
@@ -840,7 +868,7 @@ const App = {
       stepElem.className = "step-node";
       stepElem.innerHTML = `
         <div class="step-circle">${idx + 1}</div>
-        <span>${step.title} (<strong>${step.approver}</strong>)</span>
+        <span>${esc(step.title)} (<strong>${esc(step.approver)}</strong>)</span>
       `;
       stepper.appendChild(stepElem);
 
@@ -1004,13 +1032,13 @@ const App = {
       myOts.forEach(ot => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><strong>${ot.id}</strong></td>
-          <td>${ot.date}</td>
-          <td>${LeaveEngine.formatTimeOnly(ot.start_time)} ~ ${LeaveEngine.formatTimeOnly(ot.end_time)}</td>
-          <td><strong>${ot.hours}</strong> h</td>
-          <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">+${ot.comp_hours}</strong> h (${ot.comp_rate}x)</td>
-          <td>${ot.reason}</td>
-          <td style="font-size: 0.8rem; color: var(--text-muted);">${ot.expiry_date || '--'}</td>
+          <td><strong>${esc(ot.id)}</strong></td>
+          <td>${esc(ot.date)}</td>
+          <td>${esc(LeaveEngine.formatTimeOnly(ot.start_time))} ~ ${esc(LeaveEngine.formatTimeOnly(ot.end_time))}</td>
+          <td><strong>${esc(ot.hours)}</strong> h</td>
+          <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">+${esc(ot.comp_hours)}</strong> h (${esc(ot.comp_rate)}x)</td>
+          <td>${esc(ot.reason)}</td>
+          <td style="font-size: 0.8rem; color: var(--text-muted);">${esc(ot.expiry_date || '--')}</td>
           <td>${this.getStatusBadgeHtml(ot.status, "COMPLETED")}</td>
         `;
         tableBody.appendChild(tr);
@@ -1193,21 +1221,21 @@ const App = {
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
-            <td><strong>${req.id}</strong></td>
+            <td><strong>${esc(req.id)}</strong></td>
             <td>
-              <strong>${applicant.name}</strong>
-              <div style="font-size: 0.75rem; color: var(--text-muted);">${applicant.department_name}</div>
+              <strong>${esc(applicant.name)}</strong>
+              <div style="font-size: 0.75rem; color: var(--text-muted);">${esc(applicant.department_name)}</div>
             </td>
-            <td><span class="badge ${typeDef.badgeClass || 'badge-blue'}">${typeDef.name}</span></td>
+            <td><span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${esc(typeDef.name)}</span></td>
             <td style="font-size: 0.8rem;">
-              <div>${req.start_time}</div>
-              <div>至 ${req.end_time}</div>
+              <div>${esc(req.start_time)}</div>
+              <div>至 ${esc(req.end_time)}</div>
             </td>
-            <td><strong style="font-family: 'JetBrains Mono'; color: var(--primary);">${req.total_hours}</strong> h</td>
-            <td style="max-width: 180px; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${req.reason}">${req.reason}</td>
+            <td><strong style="font-family: 'JetBrains Mono'; color: var(--primary);">${esc(req.total_hours)}</strong> h</td>
+            <td style="max-width: 180px; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(req.reason)}">${esc(req.reason)}</td>
             <td>${stepBadge}</td>
             <td>
-              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('LEAVE', '${req.id}')">
+              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('LEAVE', ${jsArg(req.id)})">
                 <i class="fa-solid fa-pen-to-square"></i> 簽核
               </button>
             </td>
@@ -1237,14 +1265,14 @@ const App = {
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
-            <td><strong>${req.id}</strong></td>
-            <td><strong>${applicant.name}</strong> (${applicant.department_name})</td>
-            <td><span class="badge ${typeDef.badgeClass || 'badge-blue'}">${typeDef.name}</span></td>
-            <td style="font-size: 0.8rem;">${req.start_time} ~ ${req.end_time}</td>
-            <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">${req.total_hours}</strong> h</td>
-            <td>${req.reason}</td>
+            <td><strong>${esc(req.id)}</strong></td>
+            <td><strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</td>
+            <td><span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${esc(typeDef.name)}</span></td>
+            <td style="font-size: 0.8rem;">${esc(req.start_time)} ~ ${esc(req.end_time)}</td>
+            <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">${esc(req.total_hours)}</strong> h</td>
+            <td>${esc(req.reason)}</td>
             <td>
-              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('CANCEL_LEAVE', '${req.id}')">
+              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('CANCEL_LEAVE', ${jsArg(req.id)})">
                 <i class="fa-solid fa-rotate-left"></i> 審核銷假
               </button>
             </td>
@@ -1274,15 +1302,15 @@ const App = {
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
-            <td><strong>${ot.id}</strong></td>
-            <td><strong>${applicant.name}</strong> (${applicant.department_name})</td>
-            <td>${ot.date}</td>
-            <td>${LeaveEngine.formatTimeOnly(ot.start_time)} ~ ${LeaveEngine.formatTimeOnly(ot.end_time)}</td>
-            <td><strong>${ot.hours}</strong> h</td>
-            <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">+${ot.comp_hours}</strong> h</td>
-            <td>${ot.reason}</td>
+            <td><strong>${esc(ot.id)}</strong></td>
+            <td><strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</td>
+            <td>${esc(ot.date)}</td>
+            <td>${esc(LeaveEngine.formatTimeOnly(ot.start_time))} ~ ${esc(LeaveEngine.formatTimeOnly(ot.end_time))}</td>
+            <td><strong>${esc(ot.hours)}</strong> h</td>
+            <td><strong style="color: var(--success); font-family: 'JetBrains Mono';">+${esc(ot.comp_hours)}</strong> h</td>
+            <td>${esc(ot.reason)}</td>
             <td>
-              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('OVERTIME', '${ot.id}')">
+              <button class="btn btn-sm btn-primary" onclick="App.openApprovalModal('OVERTIME', ${jsArg(ot.id)})">
                 <i class="fa-solid fa-check"></i> 審核加班
               </button>
             </td>
@@ -1372,20 +1400,20 @@ const App = {
           } else if (log.status === "CANCELLED") {
             statusBadge = `<span class="badge badge-cancelled">已撤銷 CANCELLED</span>`;
           } else {
-            statusBadge = `<span class="badge badge-blue">${log.status}</span>`;
+            statusBadge = `<span class="badge badge-blue">${esc(log.status)}</span>`;
           }
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
-            <td><span style="font-size: 0.78rem; color: var(--text-sub); font-family: 'JetBrains Mono', monospace;">${log.id}</span></td>
-            <td><strong style="color: var(--primary); font-family: 'JetBrains Mono', monospace;">${log.request_id}</strong></td>
-            <td><strong>${applicantName}</strong></td>
-            <td><span class="badge badge-blue">${log.request_type}</span></td>
-            <td><strong>${approver.name}</strong></td>
-            <td><span style="font-size: 0.8rem; color: var(--text-muted);">${approverRoleText}</span></td>
+            <td><span style="font-size: 0.78rem; color: var(--text-sub); font-family: 'JetBrains Mono', monospace;">${esc(log.id)}</span></td>
+            <td><strong style="color: var(--primary); font-family: 'JetBrains Mono', monospace;">${esc(log.request_id)}</strong></td>
+            <td><strong>${esc(applicantName)}</strong></td>
+            <td><span class="badge badge-blue">${esc(log.request_type)}</span></td>
+            <td><strong>${esc(approver.name)}</strong></td>
+            <td><span style="font-size: 0.8rem; color: var(--text-muted);">${esc(approverRoleText)}</span></td>
             <td>${statusBadge}</td>
-            <td style="font-size: 0.82rem;">${log.comment || '--'}</td>
-            <td style="font-size: 0.78rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${log.acted_at}</td>
+            <td style="font-size: 0.82rem;">${esc(log.comment || '--')}</td>
+            <td style="font-size: 0.78rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">${esc(log.acted_at)}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -1421,28 +1449,24 @@ const App = {
       modalBody.innerHTML = `
         <div style="display: flex; flex-direction: column; gap: 14px; font-size: 0.9rem;">
           <div style="padding: 12px; background: #f8fafc; border-radius: var(--radius-md); display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-            <div>申請人員：<strong>${applicant.name}</strong> (${applicant.department_name})</div>
-            <div>申請假別：<span class="badge ${typeDef.badgeClass || 'badge-blue'}">${typeDef.name}</span></div>
-            <div>請假起訖：<strong>${req.start_time}</strong> 至 <strong>${req.end_time}</strong></div>
-            <div>扣除工時：<strong style="color: var(--primary); font-family: 'JetBrains Mono';">${req.total_hours} 小時</strong></div>
+            <div>申請人員：<strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</div>
+            <div>申請假別：<span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${esc(typeDef.name)}</span></div>
+            <div>請假起訖：<strong>${esc(req.start_time)}</strong> 至 <strong>${esc(req.end_time)}</strong></div>
+            <div>扣除工時：<strong style="color: var(--primary); font-family: 'JetBrains Mono';">${esc(req.total_hours)} 小時</strong></div>
           </div>
           <div>
             <strong>事由說明：</strong>
-            <p style="color: var(--text-muted); margin-top: 4px; background: #fafafa; padding: 8px 12px; border-radius: 6px;">${req.reason || '無'}</p>
+            <p style="color: var(--text-muted); margin-top: 4px; background: #fafafa; padding: 8px 12px; border-radius: 6px;">${esc(req.reason || '無')}</p>
           </div>
-          ${(req.attachment_url && req.attachment_url.indexOf("http") === 0) ? `
+          ${req.attachment_url ? `
             <div>
               <strong>附件證明：</strong>
-              <a href="${req.attachment_url}" target="_blank" style="color: var(--primary); text-decoration: underline; margin-left: 8px;">
-                <i class="fa-solid fa-paperclip"></i> 查看證明文件 / 圖片連結
-              </a>
+              ${renderAttachmentHtml(req.attachment_url,
+                `<i class="fa-solid fa-paperclip"></i> 查看證明文件 / 圖片連結`,
+                "color: var(--primary); text-decoration: underline; margin-left: 8px;",
+                "color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;")}
             </div>
-          ` : (req.attachment_url ? `
-            <div>
-              <strong>附件證明：</strong>
-              <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;">${req.attachment_url}</span>
-            </div>
-          ` : '')}
+          ` : ''}
           <div class="form-group">
             <label class="form-label">簽核意見 / 退回原因 <span style="color: var(--danger); font-size: 0.75rem;">(若退回則必填)</span></label>
             <textarea class="form-control" id="approvalModalComment" rows="3" placeholder="請輸入審核意見 (如：准假、同意銷假、或退回之具體理由)..."></textarea>
@@ -1458,16 +1482,16 @@ const App = {
       modalBody.innerHTML = `
         <div style="display: flex; flex-direction: column; gap: 14px; font-size: 0.9rem;">
           <div style="padding: 12px; background: #f8fafc; border-radius: var(--radius-md); display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-            <div>申報人員：<strong>${applicant.name}</strong> (${applicant.department_name})</div>
-            <div>加班日期：<strong>${ot.date}</strong></div>
-            <div>加班時段：<strong>${LeaveEngine.formatTimeOnly(ot.start_time)} ~ ${LeaveEngine.formatTimeOnly(ot.end_time)}</strong></div>
-            <div>申報工時：<strong>${ot.hours} 小時</strong></div>
-            <div>換算倍率：<strong>${ot.comp_rate}x</strong></div>
-            <div>發放補休：<strong style="color: var(--success); font-family: 'JetBrains Mono';">+${ot.comp_hours} 小時</strong></div>
+            <div>申報人員：<strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</div>
+            <div>加班日期：<strong>${esc(ot.date)}</strong></div>
+            <div>加班時段：<strong>${esc(LeaveEngine.formatTimeOnly(ot.start_time))} ~ ${esc(LeaveEngine.formatTimeOnly(ot.end_time))}</strong></div>
+            <div>申報工時：<strong>${esc(ot.hours)} 小時</strong></div>
+            <div>換算倍率：<strong>${esc(ot.comp_rate)}x</strong></div>
+            <div>發放補休：<strong style="color: var(--success); font-family: 'JetBrains Mono';">+${esc(ot.comp_hours)} 小時</strong></div>
           </div>
           <div>
             <strong>加班工作內容：</strong>
-            <p style="color: var(--text-muted); margin-top: 4px; background: #fafafa; padding: 8px 12px; border-radius: 6px;">${ot.reason || '無'}</p>
+            <p style="color: var(--text-muted); margin-top: 4px; background: #fafafa; padding: 8px 12px; border-radius: 6px;">${esc(ot.reason || '無')}</p>
           </div>
           <div class="form-group">
             <label class="form-label">簽核意見 / 退回原因</label>
@@ -1556,7 +1580,7 @@ const App = {
 
     if (currentStatus === "PENDING") {
       modalTitle.textContent = "撤銷請假申請";
-      modalPrompt.innerHTML = `確定要撤銷請假單 <strong>${requestId}</strong> 嗎？<br>撤銷後系統將<strong>立即釋放鎖定之額度</strong>。`;
+      modalPrompt.innerHTML = `確定要撤銷請假單 <strong>${esc(requestId)}</strong> 嗎？<br>撤銷後系統將<strong>立即釋放鎖定之額度</strong>。`;
     } else if (currentStatus === "APPROVED") {
       const targetReq = (this.state.requests || []).find(r => r.id === requestId);
       if (targetReq) {
@@ -1568,7 +1592,7 @@ const App = {
       }
       modalTitle.textContent = "送出銷假申請";
       const expDateText = targetReq ? LeaveEngine.checkCancelLeaveExpiry(targetReq).expiryDateStr : "";
-      modalPrompt.innerHTML = `請假單 <strong>${requestId}</strong> 已核准。<br>送出銷假申請後需經主管/人資審核，審核通過將<strong>全數退還已扣除之假別額度</strong>。<br><span style="font-size: 0.8rem; color: var(--text-muted);"><i class="fa-solid fa-circle-info"></i> 銷假時效說明：請假日期後 7 天即失效${expDateText ? ` (本單時限至 <strong>${expDateText}</strong>)` : ""}。</span>`;
+      modalPrompt.innerHTML = `請假單 <strong>${esc(requestId)}</strong> 已核准。<br>送出銷假申請後需經主管/人資審核，審核通過將<strong>全數退還已扣除之假別額度</strong>。<br><span style="font-size: 0.8rem; color: var(--text-muted);"><i class="fa-solid fa-circle-info"></i> 銷假時效說明：請假日期後 7 天即失效${expDateText ? ` (本單時限至 <strong>${esc(expDateText)}</strong>)` : ""}。</span>`;
     }
 
     document.getElementById("cancelModal").classList.add("active");
@@ -1697,7 +1721,7 @@ const App = {
       // 國定假日標記
       let holidayTag = "";
       if (holidayMap[dateStr]) {
-        holidayTag = `<span class="holiday-tag">${holidayMap[dateStr].name}</span>`;
+        holidayTag = `<span class="holiday-tag">${esc(holidayMap[dateStr].name)}</span>`;
       }
 
       let eventsHtml = "";
@@ -1710,8 +1734,8 @@ const App = {
           const emp = this.state.users.find(u => u.id === req.user_id) || { name: req.user_id };
           const typeDef = SYSTEM_CONFIG.LEAVE_TYPES.find(t => t.id === req.leave_type_id) || { name: req.leave_type_id };
           eventsHtml += `
-            <div class="calendar-event-pill" title="${emp.name} - ${typeDef.name} (${req.total_hours}h)">
-              ${emp.name}: ${typeDef.name}
+            <div class="calendar-event-pill" title="${esc(emp.name)} - ${esc(typeDef.name)} (${esc(req.total_hours)}h)">
+              ${esc(emp.name)}: ${esc(typeDef.name)}
             </div>
           `;
         }
@@ -1779,7 +1803,7 @@ const App = {
         deptGroup.style.display = "block";
         deptSelect.innerHTML = `<option value="ALL">全部部門 (All Departments)</option>`;
         SYSTEM_CONFIG.DEPARTMENTS.forEach(d => {
-          deptSelect.innerHTML += `<option value="${d.name}">${d.name}</option>`;
+          deptSelect.innerHTML += `<option value="${esc(d.name)}">${esc(d.name)}</option>`;
         });
       } else {
         deptGroup.style.display = "none";
@@ -1806,9 +1830,9 @@ const App = {
         label.className = "type-checkbox-chip active";
         label.id = `chip_${t.id}`;
         label.innerHTML = `
-          <input type="checkbox" value="${t.id}" checked onchange="App.onTypeCheckboxChange(this)">
-          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${t.color};"></span>
-          ${t.name}
+          <input type="checkbox" value="${esc(t.id)}" checked onchange="App.onTypeCheckboxChange(this)">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${esc(t.color)};"></span>
+          ${esc(t.name)}
         `;
         typeBox.appendChild(label);
       });
@@ -1856,7 +1880,7 @@ const App = {
     }
 
     candidates.forEach(u => {
-      userSelect.innerHTML += `<option value="${u.id}">${u.name} (${u.department_name} - ${u.id})</option>`;
+      userSelect.innerHTML += `<option value="${esc(u.id)}">${esc(u.name)} (${esc(u.department_name)} - ${esc(u.id)})</option>`;
     });
   },
 
@@ -2105,51 +2129,53 @@ const App = {
           statusBadge = `<span class="badge badge-amber"><i class="fa-solid fa-hourglass-half"></i> 銷假審核中</span>`;
           break;
         default:
-          statusBadge = `<span class="badge badge-blue">${item.status}</span>`;
+          statusBadge = `<span class="badge badge-blue">${esc(item.status)}</span>`;
       }
 
       const isSelf = (item.user_id === user.id);
       let actionHtml = "--";
       if (isSelf && item.type === "LEAVE") {
         if (item.status === "PENDING") {
-          actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--danger); padding: 3px 8px; font-size: 0.78rem;" onclick="App.handleCancelClick('${item.id}', 'PENDING')"><i class="fa-solid fa-ban"></i> 撤銷</button>`;
+          actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--danger); padding: 3px 8px; font-size: 0.78rem;" onclick="App.handleCancelClick(${jsArg(item.id)}, 'PENDING')"><i class="fa-solid fa-ban"></i> 撤銷</button>`;
         } else if (item.status === "APPROVED") {
           const expiryInfo = LeaveEngine.checkCancelLeaveExpiry(item);
           if (expiryInfo.isExpired) {
-            actionHtml = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${expiryInfo.expiryDateStr} 截止)" style="opacity: 0.5; cursor: not-allowed; padding: 3px 8px; font-size: 0.78rem;"><i class="fa-solid fa-clock-rotate-left"></i> 銷假逾期</button>`;
+            actionHtml = `<button class="btn btn-sm btn-secondary" disabled title="已超過請假日期後 7 天銷假時限 (時限至 ${esc(expiryInfo.expiryDateStr)} 截止)" style="opacity: 0.5; cursor: not-allowed; padding: 3px 8px; font-size: 0.78rem;"><i class="fa-solid fa-clock-rotate-left"></i> 銷假逾期</button>`;
           } else {
-            actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--primary); padding: 3px 8px; font-size: 0.78rem;" title="請假日期後 7 天內可銷假 (時限至 ${expiryInfo.expiryDateStr} 截止)" onclick="App.handleCancelClick('${item.id}', 'APPROVED')"><i class="fa-solid fa-arrow-rotate-left"></i> 銷假</button>`;
+            actionHtml = `<button class="btn btn-sm btn-secondary" style="color: var(--primary); padding: 3px 8px; font-size: 0.78rem;" title="請假日期後 7 天內可銷假 (時限至 ${esc(expiryInfo.expiryDateStr)} 截止)" onclick="App.handleCancelClick(${jsArg(item.id)}, 'APPROVED')"><i class="fa-solid fa-arrow-rotate-left"></i> 銷假</button>`;
           }
         }
       }
 
-      const isLink = item.attachment_url && item.attachment_url.indexOf("http") === 0;
-      const attachHtml = isLink
-        ? `<a href="${item.attachment_url}" target="_blank" style="color: var(--primary); font-size: 0.8rem; text-decoration: underline;"><i class="fa-solid fa-paperclip"></i> 檢視附件</a>`
-        : (item.attachment_url ? `<span style="color: var(--text-muted); font-size: 0.78rem;">${item.attachment_url}</span>` : `<span style="color: var(--text-muted); font-size: 0.8rem;">--</span>`);
+      const attachHtml = item.attachment_url
+        ? renderAttachmentHtml(item.attachment_url,
+            `<i class="fa-solid fa-paperclip"></i> 檢視附件`,
+            "color: var(--primary); font-size: 0.8rem; text-decoration: underline;",
+            "color: var(--text-muted); font-size: 0.78rem;")
+        : `<span style="color: var(--text-muted); font-size: 0.8rem;">--</span>`;
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><strong style="font-family: 'JetBrains Mono'; font-size: 0.84rem; color: var(--primary);">${item.id}</strong></td>
+        <td><strong style="font-family: 'JetBrains Mono'; font-size: 0.84rem; color: var(--primary);">${esc(item.id)}</strong></td>
         <td>
-          <strong class="name-cell" style="display: inline-block; min-width: 5.5em; font-size: 0.9rem;">${item.userName}</strong>
-          <div style="font-size: 0.75rem; color: var(--text-muted);">${item.userDept} · ${item.user_id}</div>
+          <strong class="name-cell" style="display: inline-block; min-width: 5.5em; font-size: 0.9rem;">${esc(item.userName)}</strong>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">${esc(item.userDept)} · ${esc(item.user_id)}</div>
         </td>
         <td>
-          <span class="badge" style="background: ${item.typeColor}18; color: ${item.typeColor}; border: 1px solid ${item.typeColor}40; font-weight: 600;">
-            ${item.typeName}
+          <span class="badge" style="background: ${esc(item.typeColor)}18; color: ${esc(item.typeColor)}; border: 1px solid ${esc(item.typeColor)}40; font-weight: 600;">
+            ${esc(item.typeName)}
           </span>
         </td>
-        <td><span style="font-size: 0.8rem; color: ${(item.isPaidText === '支半薪' || item.isPaid === 'HALF' || item.leave_type_id === 'SICK') ? 'var(--warning)' : (item.isPaid ? 'var(--success)' : 'var(--text-muted)')}; font-weight: 600;">${item.isPaidText}</span></td>
+        <td><span style="font-size: 0.8rem; color: ${(item.isPaidText === '支半薪' || item.isPaid === 'HALF' || item.leave_type_id === 'SICK') ? 'var(--warning)' : (item.isPaid ? 'var(--success)' : 'var(--text-muted)')}; font-weight: 600;">${esc(item.isPaidText)}</span></td>
         <td style="font-size: 0.82rem; line-height: 1.4;">
-          <strong>${item.startTime}</strong><br>
-          <span style="color: var(--text-muted);">至 ${item.endTime}</span>
+          <strong>${esc(item.startTime)}</strong><br>
+          <span style="color: var(--text-muted);">至 ${esc(item.endTime)}</span>
         </td>
-        <td><strong style="font-family: 'JetBrains Mono'; font-size: 0.95rem; color: var(--primary);">${item.hours}</strong> h</td>
-        <td style="font-size: 0.82rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.reason}">${item.reason || '--'}</td>
+        <td><strong style="font-family: 'JetBrains Mono'; font-size: 0.95rem; color: var(--primary);">${esc(item.hours)}</strong> h</td>
+        <td style="font-size: 0.82rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(item.reason)}">${esc(item.reason || '--')}</td>
         <td>${attachHtml}</td>
         <td>${statusBadge}</td>
-        <td style="font-size: 0.78rem; color: var(--text-muted);">${item.createdAt}</td>
+        <td style="font-size: 0.78rem; color: var(--text-muted);">${esc(item.createdAt)}</td>
         <td>${actionHtml}</td>
       `;
       tbody.appendChild(tr);
@@ -2287,29 +2313,29 @@ const App = {
       const isSynced = (currentBalHours === stat.hours);
 
       const encashmentHtml = unusedHours > 0 
-        ? `<span class="badge badge-purple" style="font-size: 0.78rem;" title="勞基法第38條第4項：每年度終結未休天數，雇主應發給工資"><i class="fa-solid fa-coins"></i> 結算抵銷 ${unusedHours}h (${(unusedHours/8).toFixed(1)}天)</span>` 
+        ? `<span class="badge badge-purple" style="font-size: 0.78rem;" title="勞基法第38條第4項：每年度終結未休天數，雇主應發給工資"><i class="fa-solid fa-coins"></i> 結算抵銷 ${esc(unusedHours)}h (${(unusedHours/8).toFixed(1)}天)</span>` 
         : `<span style="color: var(--text-muted); font-size: 0.78rem;"><i class="fa-solid fa-check"></i> 全數休畢</span>`;
 
       const isSelf = (u.id === user.id);
       const actionHtml = isSelf
         ? `<span style="font-size: 0.78rem; color: var(--text-muted); font-style: italic;"><i class="fa-solid fa-user-shield"></i> 當前登入者</span>`
-        : `<button class="btn btn-sm btn-secondary" style="color: var(--danger); padding: 3px 8px; font-size: 0.78rem;" onclick="App.confirmDeleteUser('${u.id}', '${u.name}')" title="刪除員工資料與假別額度">
+        : `<button class="btn btn-sm btn-secondary" style="color: var(--danger); padding: 3px 8px; font-size: 0.78rem;" onclick="App.confirmDeleteUser(${jsArg(u.id)}, ${jsArg(u.name)})" title="刪除員工資料與假別額度">
             <i class="fa-solid fa-trash-can"></i> 刪除
           </button>`;
 
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td><strong style="color: var(--primary); font-family: 'JetBrains Mono';">${u.id}</strong></td>
-        <td><strong class="name-cell" style="display: inline-block; min-width: 5.5em; white-space: nowrap; font-size: 0.92rem;">${u.name}</strong></td>
-        <td>${u.department_name || u.department_id} · <span class="badge badge-blue">${u.role}</span></td>
+        <td><strong style="color: var(--primary); font-family: 'JetBrains Mono';">${esc(u.id)}</strong></td>
+        <td><strong class="name-cell" style="display: inline-block; min-width: 5.5em; white-space: nowrap; font-size: 0.92rem;">${esc(u.name)}</strong></td>
+        <td>${esc(u.department_name || u.department_id)} · <span class="badge badge-blue">${esc(u.role)}</span></td>
         <td>
-          <input type="date" class="form-control" style="width: 145px; padding: 4px 8px; font-size: 0.85rem;" value="${hireDate}" onchange="App.handleUserHireDateChange('${u.id}', this.value)" ${isAdmin ? '' : 'disabled'}>
+          <input type="date" class="form-control" style="width: 145px; padding: 4px 8px; font-size: 0.85rem;" value="${esc(hireDate)}" onchange="App.handleUserHireDateChange(${jsArg(u.id)}, this.value)" ${isAdmin ? '' : 'disabled'}>
         </td>
-        <td><span class="badge" style="background: #f1f5f9; color: var(--text-main); font-weight: 600;">${stat.seniorityText || "未滿半年"}</span></td>
-        <td><strong style="color: #15803d; font-size: 0.95rem;">${stat.days}</strong> 天</td>
+        <td><span class="badge" style="background: #f1f5f9; color: var(--text-main); font-weight: 600;">${esc(stat.seniorityText || "未滿半年")}</span></td>
+        <td><strong style="color: #15803d; font-size: 0.95rem;">${esc(stat.days)}</strong> 天</td>
         <td>
           <span class="badge ${isSynced ? 'badge-approved' : 'badge-pending'}" title="${isSynced ? '已完成法定特休同步' : '待同步'}">
-            <i class="fa-solid ${isSynced ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${stat.hours}h
+            <i class="fa-solid ${isSynced ? 'fa-check' : 'fa-triangle-exclamation'}"></i> ${esc(stat.hours)}h
           </span>
         </td>
         <td>${encashmentHtml}</td>
@@ -2376,7 +2402,7 @@ const App = {
     this.state.activeDeleteUserId = userId;
     const promptEl = document.getElementById("deleteUserPrompt");
     if (promptEl) {
-      promptEl.innerHTML = `您確定要將員工 <strong>${userName} (${userId})</strong> 從系統與試算表中刪除嗎？<br>刪除後將一併清除該同仁之所有特休與假別額度紀錄。`;
+      promptEl.innerHTML = `您確定要將員工 <strong>${esc(userName)} (${esc(userId)})</strong> 從系統與試算表中刪除嗎？<br>刪除後將一併清除該同仁之所有特休與假別額度紀錄。`;
     }
     const modal = document.getElementById("deleteUserModal");
     if (modal) modal.classList.add("active");
@@ -2462,7 +2488,7 @@ const App = {
           } else if (lowerRole === "employee" || lowerRole === "一般同仁" || lowerRole === "員工") {
             roleDisplay = "一般同仁 (Employee)";
           }
-          mgrSelect.innerHTML += `<option value="${u.id}">${u.name} (${deptName} · ${u.id}) [${roleDisplay}]</option>`;
+          mgrSelect.innerHTML += `<option value="${esc(u.id)}">${esc(u.name)} (${esc(deptName)} · ${esc(u.id)}) [${esc(roleDisplay)}]</option>`;
         });
       }
     }
@@ -2480,7 +2506,7 @@ const App = {
     }
     const stat = LeaveEngine.calculateStatutoryAnnualLeave(hireDate, SYSTEM_CONFIG.CURRENT_YEAR);
     if (previewEl) {
-      previewEl.innerHTML = `<strong>勞基法【歷年制】核算法定特休：</strong>年資 ${stat.seniorityText || "0"}，${stat.tierDesc}，核發 <strong style="color: #15803d;">${stat.days} 天 (${stat.hours} 小時)</strong> 特別休假，將自動建立 ANNUAL 額度。`;
+      previewEl.innerHTML = `<strong>勞基法【歷年制】核算法定特休：</strong>年資 ${esc(stat.seniorityText || "0")}，${esc(stat.tierDesc)}，核發 <strong style="color: #15803d;">${esc(stat.days)} 天 (${esc(stat.hours)} 小時)</strong> 特別休假，將自動建立 ANNUAL 額度。`;
     }
   },
 
@@ -2733,7 +2759,7 @@ const App = {
       case "CANCEL_APPROVED":
         return `<span class="badge badge-slate"><i class="fa-solid fa-check-double"></i> 銷假完成 (已退額)</span>`;
       default:
-        return `<span class="badge badge-slate">${status}</span>`;
+        return `<span class="badge badge-slate">${esc(status)}</span>`;
     }
   },
 
@@ -2849,13 +2875,21 @@ const App = {
   showToast(message, type = "info") {
     const container = document.getElementById("toastContainer");
     const toast = document.createElement("div");
-    toast.className = `toast ${type}`;
+    const allowedTypes = ["info", "success", "error", "warning"];
+    toast.className = `toast ${allowedTypes.indexOf(type) !== -1 ? type : "info"}`;
 
     let icon = "fa-circle-info";
     if (type === "success") icon = "fa-circle-check";
     if (type === "error") icon = "fa-circle-exclamation";
 
-    toast.innerHTML = `<i class="fa-solid ${icon}"></i> <span>${message}</span>`;
+    // 圖示為固定標記；訊息一律以 textContent 呈現，避免伺服器/使用者內容被解析為 HTML
+    const iconEl = document.createElement("i");
+    iconEl.className = `fa-solid ${icon}`;
+    const msgEl = document.createElement("span");
+    msgEl.textContent = String(message ?? "");
+    toast.appendChild(iconEl);
+    toast.appendChild(document.createTextNode(" "));
+    toast.appendChild(msgEl);
     container.appendChild(toast);
 
     setTimeout(() => {

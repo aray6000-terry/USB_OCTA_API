@@ -2,15 +2,21 @@
  * 本機模擬資料庫引擎 (Mock Database Engine)
  * 當未連接線上 Google Sheet 或離線展示時提供完整零延遲的資料庫運作與持久化
  */
+// 本機展示模式專用之假密碼 (非真實帳密，僅供離線 Demo 登入)
+const DEMO_PASSWORD_PLACEHOLDER = "demo-only-not-a-real-password";
+// 種子資料版本：變更種子內容 (例如移除個資) 時遞增，舊版 localStorage 資料會自動重置
+const MOCK_SEED_VERSION = 2;
+
 const MockDataEngine = {
   getInitialState() {
     return {
+      _seedVersion: MOCK_SEED_VERSION,
       users: [
         {
           id: "EMP001",
           name: "李泰叡",
-          email: "aray6000@hotmail.com",
-          password_hash: "123456",
+          email: "emp001@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_MGMT",
           department_name: "管理部",
           manager_id: "EMP001",
@@ -21,8 +27,8 @@ const MockDataEngine = {
         {
           id: "EMP002",
           name: "陳勃毅",
-          email: "tony6070591135@gmail.com",
-          password_hash: "123456",
+          email: "emp002@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -33,8 +39,8 @@ const MockDataEngine = {
         {
           id: "EMP003",
           name: "何貫宇",
-          email: "abc35789abc35789@gmail.com",
-          password_hash: "123456",
+          email: "emp003@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_SALES",
           department_name: "業務部",
           manager_id: "EMP001",
@@ -45,8 +51,8 @@ const MockDataEngine = {
         {
           id: "EMP004",
           name: "劉彩雲",
-          email: "amyliupp@gmail.com",
-          password_hash: "123456",
+          email: "emp004@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_HR",
           department_name: "人資部",
           manager_id: "EMP001",
@@ -57,8 +63,8 @@ const MockDataEngine = {
         {
           id: "EMP005",
           name: "廖國寓",
-          email: "taisan648@gmail.com",
-          password_hash: "123456",
+          email: "emp005@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -69,8 +75,8 @@ const MockDataEngine = {
         {
           id: "EMP006",
           name: "何瑋恩",
-          email: "hew183273@gmail.com",
-          password_hash: "123456",
+          email: "emp006@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -81,8 +87,8 @@ const MockDataEngine = {
         {
           id: "EMP007",
           name: "簡昕儀",
-          email: "kitty89092616@gmail.com",
-          password_hash: "123456",
+          email: "emp007@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -93,8 +99,8 @@ const MockDataEngine = {
         {
           id: "EMP008",
           name: "江嘉偉",
-          email: "ccw891129@gmail.com",
-          password_hash: "123456",
+          email: "emp008@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -105,8 +111,8 @@ const MockDataEngine = {
         {
           id: "EMP009",
           name: "徐堉桉",
-          email: "yy0937010806@gmail.com",
-          password_hash: "123456",
+          email: "emp009@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -117,8 +123,8 @@ const MockDataEngine = {
         {
           id: "EMP010",
           name: "侯凱嚴",
-          email: "ken.work345@gmail.com",
-          password_hash: "123456",
+          email: "emp010@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -129,8 +135,8 @@ const MockDataEngine = {
         {
           id: "EMP011",
           name: "傅秉和",
-          email: "keionmio028@gmail.com",
-          password_hash: "123456",
+          email: "emp011@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_RD",
           department_name: "研發部",
           manager_id: "EMP001",
@@ -141,8 +147,8 @@ const MockDataEngine = {
         {
           id: "EMP012",
           name: "蔡倢羚",
-          email: "a0977001617@gmail.com",
-          password_hash: "123456",
+          email: "emp012@example.com",
+          password_hash: DEMO_PASSWORD_PLACEHOLDER,
           department_id: "DEPT_MGMT",
           department_name: "管理部",
           manager_id: "EMP001",
@@ -311,6 +317,12 @@ const MockDataEngine = {
       const stored = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.APP_STATE);
       if (stored) {
         const parsed = JSON.parse(stored);
+        // 舊版本機資料曾含真實員工信箱與明文預設密碼：版本不符即整份重置為去識別化之展示資料
+        if (parsed._seedVersion !== MOCK_SEED_VERSION) {
+          const initial = this.getInitialState();
+          this.save(initial);
+          return initial;
+        }
         // 自動同步最新 2026-2030 國定假日清單
         if (!parsed.holidays || parsed.holidays.length < SYSTEM_CONFIG.DEFAULT_HOLIDAYS.length) {
           parsed.holidays = SYSTEM_CONFIG.DEFAULT_HOLIDAYS;

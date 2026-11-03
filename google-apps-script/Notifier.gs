@@ -39,6 +39,15 @@ function installDailyDigestTrigger() {
 
 function sendDailyPendingDigest() {
   const ss = getSpreadsheet();
+
+  // 每日維護：補齊假別、建立今年 / 明年額度、跨年補休結轉
+  try {
+    syncLeaveTypes(ss);
+    syncStatutoryAnnualLeaves(ss);
+  } catch (e) {
+    console.error("每日維護失敗：" + (e && e.stack ? e.stack : e));
+  }
+
   const props = PropertiesService.getScriptProperties();
   const lastRun = props.getProperty(DIGEST_CONFIG.LAST_RUN_KEY) || "1970-01-01 00:00:00";
   const nowStr = Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy-MM-dd HH:mm:ss");

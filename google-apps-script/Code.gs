@@ -466,55 +466,127 @@ function setupSheet(ss, sheetName, headers, seedData, forceReset) {
 // ======================== 勞動基準法第38條特休假試算與同步 ========================
 
 /**
- * 依據勞基法第38條計算特別休假日數
- * @param {string|Date} hireDate 到職日
- * @param {string|Date} asOfDate 計算基準日 (預設為當前日期)
- * @returns {number} 法定特假日數
+ * 年度工具：一律以台北時間的「今年」為準，不再寫死 2026
  */
-function calculateStatutoryAnnualLeaveDays(hireDate, asOfDate) {
-  if (!hireDate) return 0;
-  const h = new Date(hireDate);
-  const now = asOfDate ? new Date(asOfDate) : new Date();
-  if (isNaN(h.getTime()) || h > now) return 0;
+function currentYear_() {
+  return parseInt(Utilities.formatDate(new Date(), "Asia/Taipei", "yyyy"), 10);
+}
 
-  let years = now.getFullYear() - h.getFullYear();
-  let months = now.getMonth() - h.getMonth();
-  let daysDiff = now.getDate() - h.getDate();
+// 解析 YYYY-MM-DD / YYYY/MM/DD / Date 為本地日期 (避免 UTC 解析造成差一天)
+function parseLocalDate_(v) {
+  if (v instanceof Date) return new Date(v.getFullYear(), v.getMonth(), v.getDate());
+  const m = String(v || "").match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (!m) return null;
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+}
 
-  if (daysDiff < 0) {
-    months -= 1;
-  }
-  if (months < 0) {
-    years -= 1;
-    months += 12;
-  }
-  const totalMonths = years * 12 + months;
+// 加月份並夾在月底 (例：8/31 + 6 個月 = 2/28 或 2/29)
+function addMonthsClamp_(d, months) {
+  const y = d.getFullYear(), m = d.getMonth() + months;
+  const last = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(d.getDate(), last));
+}
 
-  if (totalMonths < 6) {
-    return 0; // 未滿 6 個月：0 天
-  } else if (totalMonths >= 6 && totalMonths < 12) {
-    return 3; // 滿 6 個月以上未滿 1 年：3 天
-  } else if (years === 1) {
-    return 7; // 滿 1 年以上未滿 2 年：7 天
-  } else if (years === 2) {
-    return 10; // 滿 2 年以上未滿 3 年：10 天
-  } else if (years >= 3 && years < 5) {
-    return 14; // 滿 3 年以上未滿 5 年：每年 14 天
-  } else if (years >= 5 && years < 10) {
-    return 15; // 滿 5 年以上未滿 10 年：每年 15 天
-  } else if (years >= 10) {
-    const calculated = 15 + (years - 9); // 滿 10 年 16 天, 滿 11 年 17 天...
-    return Math.min(30, calculated);
-  }
-  return 0;
+// 勞基法第38條：滿 n 年 (n>=1) 之該年度特休日數
+function statutoryDaysForServiceYear_(n) {
+  if (n < 1) return 0;
+  if (n === 1) return 7;
+  if (n === 2) return 10;
+  if (n <= 4) return 14;
+  if (n <= 9) return 15;
+  return Math.min(30, 15 + (n - 9));
 }
 
 /**
- * 依據勞基法第38條計算特別休假小時數 (1 天 = 8 小時)
+ * 勞基法第38條【歷年制】特休時數 (前後端共用同一套算法，engine.js 有相同實作)
+ *  - 滿 6 個月的 3 日：於滿 6 個月當日所在年度一次給足
+ *  - 滿 n 週年 (n>=1) 的特休：依「n 週年 ~ n+1 週年」期間落在該曆年的天數比例分配
+ *  - 換算小時 (1 日 = 8 小時) 後無條件進位到 0.5 小時，避免少給
  */
-function calculateStatutoryAnnualLeaveHours(hireDate, asOfDate) {
-  const days = calculateStatutoryAnnualLeaveDays(hireDate, asOfDate);
-  return days * 8.0;
+function calculateStatutoryAnnualLeaveHours(hireDate, targetYear) {
+  const year = parseInt(targetYear, 10) || currentYear_();
+  const h = parseLocalDate_(hireDate);
+  if (!h) return 0.0;
+
+  const yStart = new Date(year, 0, 1).getTime();
+  const yEnd = new Date(year + 1, 0, 1).getTime();
+  const DAY = 24 * 60 * 60 * 1000;
+  let days = 0;
+
+  const sixMonth = addMonthsClamp_(h, 6);
+  if (sixMonth.getFullYear() === year) days += 3;
+
+  for (let n = 1; n <= 60; n++) {
+    const pStart = addMonthsClamp_(h, 12 * n).getTime();
+    const pEnd = addMonthsClamp_(h, 12 * (n + 1)).getTime();
+    if (pStart >= yEnd) break;
+    const overlap = Math.min(pEnd, yEnd) - Math.max(pStart, yStart);
+    if (overlap > 0) {
+      days += statutoryDaysForServiceYear_(n) * (Math.round(overlap / DAY) / Math.round((pEnd - pStart) / DAY));
+    }
+  }
+  return Math.ceil(days * 8 * 2 - 1e-9) / 2;
+}
+
+/**
+ * 補休跨年結轉：到了新年度 (year <= 今年) 才把上一年度未使用的補休移到新年度，每人每年只做一次。
+ * (補休有效期為加班日起 1 年；到期未休完依法應折發工資，請由人資另行處理)
+ */
+function carryOverComp_(ss, userId, year) {
+  if (year > currentYear_()) return 0;
+  const props = PropertiesService.getScriptProperties();
+  const flag = `COMP_CARRY_${userId}_${year}`;
+  if (props.getProperty(flag)) return 0;
+
+  const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
+  const data = balSheet.getDataRange().getValues();
+  const hd = data[0];
+  const iUser = hd.indexOf("user_id"), iType = hd.indexOf("leave_type_id"), iYear = hd.indexOf("year");
+  const iTotal = hd.indexOf("total_hours"), iUsed = hd.indexOf("used_hours"), iPend = hd.indexOf("pending_hours");
+  let prevRow = -1, curRow = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][iUser]) !== String(userId) || data[i][iType] !== "COMP") continue;
+    const y = parseInt(data[i][iYear], 10);
+    if (y === year - 1) prevRow = i;
+    if (y === year) curRow = i;
+  }
+  if (prevRow === -1 || curRow === -1) return 0;
+  const p = data[prevRow];
+  const carry = Math.max(0, (parseFloat(p[iTotal]) || 0) - (parseFloat(p[iUsed]) || 0) - (parseFloat(p[iPend]) || 0));
+  if (carry > 0) {
+    balSheet.getRange(prevRow + 1, iTotal + 1).setValue((parseFloat(p[iTotal]) || 0) - carry);
+    balSheet.getRange(curRow + 1, iTotal + 1).setValue((parseFloat(data[curRow][iTotal]) || 0) + carry);
+  }
+  props.setProperty(flag, String(carry));
+  return carry;
+}
+
+/**
+ * 確保某員工某年度的基本額度列存在 (特休 / 補休 / 事假 / 病假)。
+ * 補休：新年度建立時，自動帶入上一年度尚未使用的補休時數。
+ */
+function ensureYearBalances_(ss, userId, year, hireDate) {
+  const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
+  const rows = sheetToObjects(balSheet);
+  const has = t => rows.some(b => String(b.user_id) === String(userId) && b.leave_type_id === t && parseInt(b.year, 10) === year);
+
+  if (hireDate === undefined) {
+    const u = findUserById_(ss, userId);
+    hireDate = u ? u.hire_date : null;
+  }
+
+  const created = [];
+  if (!has("ANNUAL")) {
+    balSheet.appendRow([`BAL_${userId}_ANNUAL_${year}`, userId, "ANNUAL", year, calculateStatutoryAnnualLeaveHours(hireDate, year), 0.0, 0.0]);
+    created.push("ANNUAL");
+  }
+  if (!has("COMP")) {
+    balSheet.appendRow([`BAL_${userId}_COMP_${year}`, userId, "COMP", year, 0.0, 0.0, 0.0]);
+    created.push("COMP");
+  }
+  if (!has("PERSONAL")) { balSheet.appendRow([`BAL_${userId}_PERSONAL_${year}`, userId, "PERSONAL", year, 112.0, 0.0, 0.0]); created.push("PERSONAL"); }
+  if (!has("SICK")) { balSheet.appendRow([`BAL_${userId}_SICK_${year}`, userId, "SICK", year, 240.0, 0.0, 0.0]); created.push("SICK"); }
+  return created;
 }
 
 /**
@@ -526,139 +598,46 @@ function syncStatutoryAnnualLeaves(ss) {
   const balSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_BALANCES);
   if (!userSheet || !balSheet) return { success: false, message: "資料表不存在" };
 
-  const userData = userSheet.getDataRange().getValues();
-  if (userData.length <= 1) return { success: true, message: "無使用者資料" };
+  const users = sheetToObjects(userSheet);
+  const thisYear = currentYear_();
+  const years = [thisYear, thisYear + 1]; // 今年與明年都建好，年底就能先請明年的假
+  let updated = 0;
+  const kept = [];
 
-  let userHeaders = userData[0];
-  let hireDateIdx = userHeaders.indexOf("hire_date");
-
-  // 若使用者表缺少 hire_date 欄位，自動擴充標題欄
-  if (hireDateIdx === -1) {
-    userSheet.getRange(1, userHeaders.length + 1).setValue("hire_date");
-    userHeaders.push("hire_date");
-    hireDateIdx = userHeaders.length - 1;
-  }
-
-  const idIdx = userHeaders.indexOf("id");
-  const currentYear = CONFIG.CURRENT_YEAR || 2026;
+  users.forEach(u => {
+    if (!u.id) return;
+    years.forEach(y => ensureYearBalances_(ss, u.id, y, u.hire_date));
+    carryOverComp_(ss, u.id, thisYear);
+  });
 
   const balData = balSheet.getDataRange().getValues();
-  const balHeaders = balData[0];
-  const balUserIdx = balHeaders.indexOf("user_id");
-  const balTypeIdx = balHeaders.indexOf("leave_type_id");
-  const balYearIdx = balHeaders.indexOf("year");
-  const balTotalIdx = balHeaders.indexOf("total_hours");
+  const hd = balData[0];
+  const iUser = hd.indexOf("user_id"), iType = hd.indexOf("leave_type_id"), iYear = hd.indexOf("year"), iTotal = hd.indexOf("total_hours");
+  const userById = {};
+  users.forEach(u => { userById[String(u.id)] = u; });
 
-  let updatedCount = 0;
-
-  for (let i = 1; i < userData.length; i++) {
-    const uRow = userData[i];
-    const userId = uRow[idIdx];
-    let hireDate = uRow[hireDateIdx];
-    if (!userId) continue;
-
-    if (hireDate instanceof Date) {
-      hireDate = Utilities.formatDate(hireDate, "Asia/Taipei", "yyyy-MM-dd");
-    } else if (typeof hireDate === "string") {
-      hireDate = hireDate.substring(0, 10);
+  for (let r = 1; r < balData.length; r++) {
+    if (String(balData[r][iType]) !== "ANNUAL") continue;
+    const y = parseInt(balData[r][iYear], 10);
+    const u = userById[String(balData[r][iUser])];
+    if (!u || years.indexOf(y) === -1 || !u.hire_date) continue;
+    const statutory = calculateStatutoryAnnualLeaveHours(u.hire_date, y);
+    const existing = parseFloat(balData[r][iTotal]) || 0;
+    if (Math.abs(existing - statutory) < 0.01) continue;
+    if (y === thisYear && statutory < existing) {
+      // 今年已發放的額度不自動調降，留給人資判斷
+      kept.push(`${u.name || u.id}(${existing}h→法定${statutory}h)`);
+      continue;
     }
-
-    if (!hireDate) continue;
-
-    const statutoryHours = calculateStatutoryAnnualLeaveHours(hireDate);
-
-    // 尋找對應的 ANNUAL 額度列
-    let foundRow = -1;
-    for (let b = 1; b < balData.length; b++) {
-      if (String(balData[b][balUserIdx]) === String(userId) &&
-          String(balData[b][balTypeIdx]) === "ANNUAL" &&
-          String(balData[b][balYearIdx]) === String(currentYear)) {
-        foundRow = b + 1;
-        break;
-      }
-    }
-
-    if (foundRow > 0) {
-      balSheet.getRange(foundRow, balTotalIdx + 1).setValue(statutoryHours);
-      updatedCount++;
-    } else {
-      const newBalId = "BAL_" + userId + "_ANNUAL_" + currentYear;
-      balSheet.appendRow([newBalId, userId, "ANNUAL", currentYear, statutoryHours, 0.0, 0.0]);
-      updatedCount++;
-    }
+    balSheet.getRange(r + 1, iTotal + 1).setValue(statutory);
+    updated++;
   }
 
   return {
     success: true,
-    message: `已依勞基法第38條施行細則第24條之1【歷年制】同步 ${updatedCount} 位員工之特別休假額度 (ANNUAL)。`
+    message: `已同步 ${years.join("、")} 年度特休額度，更新 ${updated} 筆。` +
+      (kept.length ? ` 以下員工今年已發放額度高於法定計算，未自動調降，請人資確認：${kept.join("、")}` : "")
   };
-}
-
-/**
- * 勞基法第38條施行細則第24條之1【歷年制】特休時數核算 (每年 1/1 ~ 12/31 重新核算)
- */
-function calculateStatutoryAnnualLeaveHours(hireDate, targetYear) {
-  const year = targetYear || CONFIG.CURRENT_YEAR || 2026;
-  if (!hireDate) return 0.0;
-
-  let h = hireDate;
-  if (typeof h === "string") {
-    h = new Date(h.replace(/-/g, "/"));
-  }
-  if (!(h instanceof Date) || isNaN(h.getTime())) return 0.0;
-
-  const yearStart = new Date(year, 0, 1);
-  const yearEnd = new Date(year, 11, 31);
-  const totalYearDays = Math.round((yearEnd - yearStart) / (1000 * 60 * 60 * 24)) + 1; // 365 或 366
-
-  if (h > yearEnd) return 0.0;
-
-  function getAnniversaryDays(n) {
-    if (n < 0.5) return 0;
-    if (n >= 0.5 && n < 1) return 3;
-    if (n === 1) return 7;
-    if (n === 2) return 10;
-    if (n === 3 || n === 4) return 14;
-    if (n >= 5 && n < 10) return 15;
-    if (n >= 10) return Math.min(30, 15 + (n - 9));
-    return 0;
-  }
-
-  let statutoryDays = 0;
-
-  // 1. 若為當年度到職
-  if (h.getFullYear() === year) {
-    const sixMonthDate = new Date(h);
-    sixMonthDate.setMonth(sixMonthDate.getMonth() + 6);
-    if (sixMonthDate <= yearEnd) {
-      statutoryDays = 3.0;
-    } else {
-      statutoryDays = 0.0;
-    }
-  } else {
-    // 2. 前一年度或更早到職：以週年日切分前後段
-    const anniversary = new Date(year, h.getMonth(), h.getDate());
-    const priorYears = year - h.getFullYear() - 1;
-    const nextYears = priorYears + 1;
-
-    const d1 = Math.max(0, Math.floor((anniversary - yearStart) / (1000 * 60 * 60 * 24)));
-    const d2 = totalYearDays - d1;
-
-    let part1Days = 0;
-    if (priorYears === 0) {
-      const sixMonthDate = new Date(h);
-      sixMonthDate.setMonth(sixMonthDate.getMonth() + 6);
-      part1Days = (sixMonthDate <= yearStart) ? 3.0 : 0.0;
-    } else {
-      part1Days = getAnniversaryDays(priorYears) * (d1 / totalYearDays);
-    }
-
-    const part2Days = getAnniversaryDays(nextYears) * (d2 / totalYearDays);
-    const totalRaw = part1Days + part2Days;
-    statutoryDays = Math.round(totalRaw * 10) / 10;
-  }
-
-  return Math.round(statutoryDays * 8.0 * 10) / 10;
 }
 
 /**
@@ -824,6 +803,25 @@ function syncLeaveTypes(ss) {
   const descIdx = headers.indexOf("description");
 
   if (idIdx === -1) return;
+
+  // 補上缺少的假別 (產假、陪產假)，並修正生理假 / 陪產假最小單位
+  const minIdx = headers.indexOf("min_unit");
+  const existingIds = data.slice(1).map(r => String(r[idIdx]).trim());
+  ALL_LEAVE_TYPE_DEFAULTS.forEach(def => {
+    if (existingIds.indexOf(def[0]) === -1) {
+      const row = headers.map(h => {
+        const k = ["id", "name", "min_unit", "requires_attachment", "is_paid", "description"].indexOf(h);
+        return k === -1 ? "" : def[k];
+      });
+      ltSheet.appendRow(row);
+    }
+  });
+  for (let i = 1; i < data.length; i++) {
+    const id = String(data[i][idIdx]).trim();
+    if (MIN_UNIT_OVERRIDE[id] && minIdx !== -1 && parseFloat(data[i][minIdx]) !== MIN_UNIT_OVERRIDE[id]) {
+      ltSheet.getRange(i + 1, minIdx + 1).setValue(MIN_UNIT_OVERRIDE[id]);
+    }
+  }
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
@@ -1213,6 +1211,21 @@ function calculateLeaveHours(startStr, endStr) {
 
 // ======================== 請假申請與防呆邏輯 ========================
 
+// 事件型假別：不需事先核發額度，依單次 / 每月上限控管 (時數以工作時數計)
+const EVENT_LEAVE_RULES = {
+  MARRIAGE:    { name: "婚假",   maxPerRequest: 64 },   // 8 日
+  BEREAVEMENT: { name: "喪假",   maxPerRequest: 64 },   // 最多 8 日 (依親等 3/6/8 日)
+  MATERNITY:   { name: "產假",   maxPerRequest: 320 },  // 8 週 (約 40 個工作日)
+  PATERNITY:   { name: "陪產檢及陪產假", maxPerRequest: 56 }, // 7 日
+  MENSTRUAL:   { name: "生理假", maxPerRequest: 8, maxPerMonth: 8 } // 每月 1 日
+};
+// 最小請假單位修正：生理假、陪產假允許以上午 (3.5h) / 下午 (4.5h) 請半天
+const MIN_UNIT_OVERRIDE = { MENSTRUAL: 0.5, PATERNITY: 0.5 };
+const ALL_LEAVE_TYPE_DEFAULTS = [
+  ["MATERNITY", "產假", 8.0, true, true, "女性員工分娩給予產假8星期，工資照給，需附出生證明"],
+  ["PATERNITY", "陪產假", 0.5, true, true, "陪伴配偶分娩給予7日陪產檢及陪產假，工資照給"]
+];
+
 function applyLeave(params) {
   const { userId, leaveTypeId, startTime, endTime, reason, attachmentUrl } = params;
   const ss = getSpreadsheet();
@@ -1231,12 +1244,26 @@ function applyLeave(params) {
   // 3. 檢查假別最小單位
   const leaveTypesSheet = ss.getSheetByName(CONFIG.SHEETS.LEAVE_TYPES);
   const leaveTypes = sheetToObjects(leaveTypesSheet);
-  const leaveType = leaveTypes.find(t => t.id === leaveTypeId);
+  let leaveType = leaveTypes.find(t => t.id === leaveTypeId);
+  if (!leaveType) {
+    const def = ALL_LEAVE_TYPE_DEFAULTS.find(d => d[0] === leaveTypeId);
+    if (def) leaveType = { id: def[0], name: def[1], min_unit: def[2], requires_attachment: def[3], is_paid: def[4] };
+  }
   if (!leaveType) {
     return { success: false, message: "找不到指定的假別。" };
   }
 
-  const minUnit = parseFloat(leaveType.min_unit) || 0.5;
+  // 不允許跨年度申請：請拆成兩張 (各年度額度分開計算)
+  const sY = new Date(startTime).getFullYear(), eY = new Date(endTime).getFullYear();
+  if (sY !== eY) {
+    return { success: false, message: `請假期間跨越 ${sY}/${eY} 兩個年度，請以 12/31 為界拆成兩張假單分別申請。` };
+  }
+  const thisYear = currentYear_();
+  if (sY > thisYear + 1) {
+    return { success: false, message: `目前最多只能預先申請到 ${thisYear + 1} 年度的假。` };
+  }
+
+  const minUnit = MIN_UNIT_OVERRIDE[leaveTypeId] || parseFloat(leaveType.min_unit) || 0.5;
   if ((totalHours % minUnit) > 0.01 && (minUnit - (totalHours % minUnit)) > 0.01) {
     return { success: false, message: `此假別最小申請單位為 ${minUnit} 小時。` };
   }
@@ -1292,7 +1319,43 @@ function applyLeave(params) {
     }
   }
 
-  const isQuotaExempt = (leaveTypeId === "PERSONAL" || leaveTypeId === "SICK");
+  const eventRule = EVENT_LEAVE_RULES[leaveTypeId];
+  const isQuotaExempt = (leaveTypeId === "PERSONAL" || leaveTypeId === "SICK" || !!eventRule);
+
+  if (eventRule) {
+    if (totalHours > eventRule.maxPerRequest) {
+      return { success: false, message: `「${eventRule.name}」單次最多 ${eventRule.maxPerRequest} 小時，本次為 ${totalHours} 小時。` };
+    }
+    if (eventRule.maxPerMonth) {
+      const ym = Utilities.formatDate(new Date(startTime), "Asia/Taipei", "yyyy-MM");
+      const usedThisMonth = allRequests.filter(r =>
+        r.user_id === userId && r.leave_type_id === leaveTypeId &&
+        (r.status === "PENDING" || r.status === "APPROVED" || r.status === "CANCEL_PENDING") &&
+        String(r.start_time).substring(0, 7).replace("/", "-") === ym
+      ).reduce((sum, r) => sum + (parseFloat(r.total_hours) || 0), 0);
+      if (usedThisMonth + totalHours > eventRule.maxPerMonth) {
+        return { success: false, message: `「${eventRule.name}」每月最多 ${eventRule.maxPerMonth} 小時，本月已申請 ${usedThisMonth} 小時。` };
+      }
+    }
+  }
+
+  // 特休 / 補休：該年度額度尚未建立時 (例如跨年後第一次請假)，先自動建立
+  if (leaveTypeId === "COMP" && carryOverComp_(ss, userId, currentYear) > 0) {
+    balanceRowIndex = -1; // 結轉後重新讀取額度
+  }
+  if (balanceRowIndex === -1 && (leaveTypeId === "ANNUAL" || leaveTypeId === "COMP")) {
+    ensureYearBalances_(ss, userId, currentYear);
+    const fresh = balSheet.getDataRange().getValues();
+    for (let i = 1; i < fresh.length; i++) {
+      if (fresh[i][userIdx] === userId && fresh[i][typeIdx] === leaveTypeId && parseInt(fresh[i][yearIdx]) === currentYear) {
+        balanceRowIndex = i + 1;
+        totalHoursQuota = parseFloat(fresh[i][totalIdx]) || 0;
+        usedHours = parseFloat(fresh[i][usedIdx]) || 0;
+        pendingHours = parseFloat(fresh[i][pendingIdx]) || 0;
+        break;
+      }
+    }
+  }
 
   if (balanceRowIndex === -1) {
     if (!isQuotaExempt) {
@@ -1339,7 +1402,7 @@ function applyLeave(params) {
     }
   }
 
-  let reqId = params.requestId;
+  let reqId = /^REQ-\d{8}-\d{6}-\d{3,4}(-\d{1,3})?$/.test(String(params.requestId || "")) ? params.requestId : null;
   if (!reqId || existingReqIds[reqId]) {
     const datePrefix = "REQ-" + Utilities.formatDate(new Date(), "Asia/Taipei", "yyyyMMdd-HHmmss");
     let counter = 0;
@@ -1695,7 +1758,7 @@ function applyOvertime(params) {
     }
   }
 
-  let otId = params.overtimeId;
+  let otId = /^OT-\d{8}-\d{6}-\d{3,4}(-\d{1,3})?$/.test(String(params.overtimeId || "")) ? params.overtimeId : null;
   if (!otId || existingOtIds[otId]) {
     const datePrefix = "OT-" + Utilities.formatDate(new Date(), "Asia/Taipei", "yyyyMMdd-HHmmss");
     let counter = 0;
@@ -2089,8 +2152,8 @@ function adminCreateUser(params) {
   userSheet.appendRow(newRow);
 
   // 計算並初始化該員工之額度 (leave_balances)
-  const currentYear = CONFIG.CURRENT_YEAR || 2026;
-  const annualHours = calculateStatutoryAnnualLeaveHours(hireDateVal);
+  const currentYear = currentYear_();
+  const annualHours = calculateStatutoryAnnualLeaveHours(hireDateVal, currentYear);
 
   const initialBalances = [
     ["BAL_" + newId + "_ANNUAL_" + currentYear, newId, "ANNUAL", currentYear, annualHours, 0.0, 0.0],
@@ -2102,6 +2165,7 @@ function adminCreateUser(params) {
   initialBalances.forEach(row => {
     balSheet.appendRow(row);
   });
+  ensureYearBalances_(ss, newId, currentYear + 1, hireDateVal);
 
   return {
     success: true,

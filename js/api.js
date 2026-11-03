@@ -17,7 +17,7 @@ const ApiService = {
       isRemote: this.isUsingRemoteGas(),
       url: this.getGasUrl(),
       apiVersion: this._remoteApiVersion,
-      isCustomOverride: localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true"
+      isCustomOverride: false // 自訂後端網址覆寫已停用 (一律使用 DEFAULT_GAS_URL)
     };
   },
 
@@ -35,14 +35,18 @@ const ApiService = {
   },
 
   getGasUrl() {
-    // 檢查是否有顯式啟用自訂覆寫
-    const isOverride = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE) === "true";
-    if (isOverride) {
+    // 【安全性】一律使用程式碼中配置之官方 DEFAULT_GAS_URL。
+    // localStorage 內的自訂網址覆寫 (CUSTOM_GAS_OVERRIDE / GAS_URL) 可被任何人或 XSS 竄改，
+    // 進而把登入帳密與 token 導向第三方伺服器，因此除非與官方網址完全相同，否則一律忽略並清除。
+    const defaultUrl = SYSTEM_CONFIG.DEFAULT_GAS_URL || "";
+    try {
       const stored = localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
-      if (stored && stored.trim()) return stored.trim();
-    }
-    // 預設一律回傳全域代碼配置的官方網址，確保所有同仁跨裝置 100% 同步同一資料庫
-    return SYSTEM_CONFIG.DEFAULT_GAS_URL || "";
+      if (stored !== null && stored.trim() !== defaultUrl) {
+        localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
+        localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE);
+      }
+    } catch (e) {}
+    return defaultUrl;
   },
 
   setGasUrl(url) {
@@ -54,12 +58,13 @@ const ApiService = {
       }
     }
     const trimmed = (url || "").trim();
+    // 【安全性】不再允許自前端改寫後端網址；變更後端請修改 js/config.js 之 DEFAULT_GAS_URL 並重新部署
     if (trimmed && trimmed !== SYSTEM_CONFIG.DEFAULT_GAS_URL) {
-      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.CUSTOM_GAS_OVERRIDE, "true");
-      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL, trimmed);
-    } else {
+      console.error("【安全性拒絕】前端不允許自訂後端網址，請於 js/config.js 修改 DEFAULT_GAS_URL。");
       this.resetToDefaultGasUrl();
+      return false;
     }
+    this.resetToDefaultGasUrl();
     return true;
   },
 
@@ -135,9 +140,11 @@ const ApiService = {
       "applyLeave", "cancelLeave", "approveLeave", "rejectLeave",
       "applyOvertime", "approveOvertime", "rejectOvertime",
       "adminUpdateBalance", "adminUpdateUser", "adminCreateUser", "adminDeleteUser",
-      "changePassword"
+      "changePassword", "syncStatutoryAnnualLeaves", "syncHolidays"
     ];
     const isMutation = MUTATION_ACTIONS.indexOf(action) !== -1;
+    // 登入與異動操作在遠端模式下絕不可降級至本機 Mock (Mock 帳密為展示用，降級會造成假登入/假寫入)
+    const noMockFallback = isMutation || action === "login";
 
     // 若啟用線上 Google Apps Script
     if (this.isUsingRemoteGas()) {
@@ -180,8 +187,15 @@ const ApiService = {
           return result;
         }
 
-        // 若遠端 GAS 回報不支援此 action (如尚未更新部署的 login)，平滑降級至本機模組處理
+        // 若遠端 GAS 回報不支援此 action：登入與異動操作直接回傳錯誤，僅唯讀查詢可降級至本機模組
         if (result && !result.success && typeof result.message === "string" && result.message.indexOf("Action not supported") !== -1) {
+          if (noMockFallback) {
+            console.error(`遠端 GAS 未支援 ${action}，此操作不允許降級至本機模組`);
+            return {
+              success: false,
+              message: `雲端後端尚未支援此功能 (${action})，請聯絡系統管理員更新 Google Apps Script 部署版本。`
+            };
+          }
           console.warn(`遠端 GAS 未支援 ${action}，自動切換至本機相容模組處理`);
           return this.callMockApi(action, params);
         }
@@ -198,6 +212,13 @@ const ApiService = {
 
         this.setConnectionStatus("error", err.message);
 
+        // 【關鍵防呆】：登入
+        if (action === "login") {
+          return {
+            success: false,
+            message: `【雲端連線失敗】無法連線至登入伺服器 (${err.message || "網路異常或 GAS 無回應"})，請檢查網路連線後再試。`
+          };
+        }
         // 【關鍵防呆】：異動操作絕不允許靜默降級到 LocalStorage！
         if (isMutation) {
           return {
@@ -881,7 +902,7 @@ const ApiService = {
           id: newId,
           name,
           email,
-          password_hash: password || "123456",
+          password_hash: password || DEMO_PASSWORD_PLACEHOLDER,
           department_id: deptId,
           department_name: deptName,
           manager_id: manager_id || "EMP002",

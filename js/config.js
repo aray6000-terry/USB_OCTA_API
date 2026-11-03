@@ -17,8 +17,8 @@ const SYSTEM_CONFIG = {
   // 銷假有效時限：請假日期後 7 天即失效
   CANCEL_LEAVE_EXPIRY_DAYS: 7,
 
-  // 預設年份
-  CURRENT_YEAR: 2026,
+  // 目前年度：依瀏覽器當下日期自動判斷 (不再寫死 2026)
+  CURRENT_YEAR: new Date().getFullYear(),
 
   // 預設 Google Apps Script 佈署網址
   DEFAULT_GAS_URL: "https://script.google.com/macros/s/AKfycbxBrJVcUkoUab5PrZIR9KYCwMTswNNq8JI9ZXE32u5nHZkTcmQC9Ms-QW4F1HaJollrow/exec",
@@ -113,12 +113,12 @@ const SYSTEM_CONFIG = {
     {
       id: "MENSTRUAL",
       name: "生理假",
-      minUnit: 4.0,
+      minUnit: 0.5,
       requiresAttachment: false,
       isPaid: false,
       color: "#9333ea",
       badgeClass: "badge-purple",
-      description: "女性同仁每月得請生理假一日，不支薪，以半天(4h)為單位"
+      description: "女性同仁每月得請生理假一日，不支薪，可請半天 (上午 3.5h / 下午 4.5h)，每月以 1 日為限"
     },
     {
       id: "MATERNITY",
@@ -133,7 +133,7 @@ const SYSTEM_CONFIG = {
     {
       id: "PATERNITY",
       name: "陪產假",
-      minUnit: 4.0,
+      minUnit: 0.5,
       requiresAttachment: true,
       isPaid: true,
       color: "#0284c7",
