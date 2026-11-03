@@ -115,10 +115,12 @@ const SYSTEM_CONFIG = {
       name: "生理假",
       minUnit: 0.5,
       requiresAttachment: false,
-      isPaid: false,
+      isPaid: "HALF",
+      payRate: 0.5,
+      paidText: "支半薪",
       color: "#9333ea",
       badgeClass: "badge-purple",
-      description: "女性同仁每月得請生理假一日，不支薪，可請半天 (上午 3.5h / 下午 4.5h)，每月以 1 日為限"
+      description: "每月得請 1 日，可請半天 (上午 3.5h / 下午 4.5h)；全年前 3 日不併入病假，超過部分併入病假；薪資減半發給 (性平法第 14 條)"
     },
     {
       id: "MATERNITY",

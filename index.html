@@ -1040,21 +1040,19 @@
           </div>
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
             <div class="form-group">
-              <label class="form-label">加班申報工時</label>
-              <input type="number" step="0.5" class="form-control" id="otHours" required value="3.0" onchange="App.calcOtHours()">
+              <label class="form-label">加班工時 (依起訖時間自動計算)</label>
+              <input type="number" step="0.5" class="form-control" id="otHours" required value="3.0" readonly>
             </div>
             <div class="form-group">
-              <label class="form-label">補休換算倍率</label>
-              <select class="form-control" id="otRate" onchange="App.calcOtHours()">
-                <option value="1.0">1.0 倍 (標準一比一)</option>
-                <option value="1.34" selected>1.34 倍 (平日加班前2小時)</option>
-                <option value="1.67">1.67 倍 (平日加班第3小時起/假日)</option>
+              <label class="form-label">補休換算方式</label>
+              <select class="form-control" id="otRate" disabled>
+                <option value="1.0" selected>1 : 1 (勞基法第 32-1 條，依加班時數)</option>
               </select>
             </div>
           </div>
           <div style="padding: 10px 14px; background: #ecfdf5; border-radius: var(--radius-md); margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center;">
             <span style="font-size: 0.85rem; color: #065f46; font-weight: 600;">核准後預計發放補休：</span>
-            <strong style="font-size: 1.15rem; color: var(--success); font-family: 'JetBrains Mono', monospace;" id="otCalculatedCompHours">4.0 小時</strong>
+            <strong style="font-size: 1.15rem; color: var(--success); font-family: 'JetBrains Mono', monospace;" id="otCalculatedCompHours">3.0 小時</strong>
           </div>
           <div class="form-group">
             <label class="form-label">加班事由與工作內容 <span class="req-star">*</span></label>

@@ -825,9 +825,22 @@ const App = {
 
     const postRemElem = document.getElementById("previewPostRemaining");
 
-    if (isQuotaExempt) {
-      document.getElementById("formAvailableBalance").textContent = `無上限限制（${typeDef ? typeDef.name : leaveTypeId}無預設額度限制，可依需求直接申請，累計已請 ${used}h）`;
-      postRemElem.textContent = `不限額度（送出後累計 ${(used + pending + hours).toFixed(1)} 小時）`;
+    // 事假 14 日 / 病假 30 日 法定年度上限：超過仍可送出，但顯示警告
+    const SOFT_LIMITS = { PERSONAL: 112, SICK: 240 };
+    if (SOFT_LIMITS[leaveTypeId]) {
+      const limit = SOFT_LIMITS[leaveTypeId];
+      const after = used + pending + hours;
+      document.getElementById("formAvailableBalance").textContent = `法定年度上限 ${limit} 小時（${limit / 8} 日），已請 ${used}h、審核中 ${pending}h`;
+      if (after > limit) {
+        postRemElem.textContent = `⚠️ 送出後累計 ${after.toFixed(1)} 小時，超過法定上限 ${limit} 小時；仍可送出，需主管 / 人資同意`;
+        postRemElem.style.color = "var(--warning, #d97706)";
+      } else {
+        postRemElem.textContent = `送出後累計 ${after.toFixed(1)} / ${limit} 小時`;
+        postRemElem.style.color = "var(--text-main)";
+      }
+    } else if (isQuotaExempt) {
+      document.getElementById("formAvailableBalance").textContent = `依事件給假（${typeDef ? typeDef.name : leaveTypeId}不需預先核發額度，送出時由系統檢查單次 / 每月上限）`;
+      postRemElem.textContent = `本次 ${hours.toFixed(1)} 小時`;
       postRemElem.style.color = "var(--primary)";
     } else {
       document.getElementById("formAvailableBalance").textContent = `${available} 小時 (總額 ${total}h - 已用 ${used}h - 鎖定 ${pending}h)`;
@@ -1060,10 +1073,16 @@ const App = {
    * 計算加班可換算補休時數
    */
   calcOtHours() {
-    const hours = parseFloat(document.getElementById("otHours").value) || 0;
-    const rate = parseFloat(document.getElementById("otRate").value) || 1.0;
-    const compHours = (hours * rate).toFixed(1);
-    document.getElementById("otCalculatedCompHours").textContent = `${compHours} 小時`;
+    // 與後端相同：依起訖時間計算 (支援跨午夜)，以 0.5 小時為單位；補休依勞基法第 32-1 條 1:1
+    const toMin = t => { const m = String(t || "").match(/(\d{1,2}):(\d{2})/); return m ? (+m[1]) * 60 + (+m[2]) : NaN; };
+    let s = toMin(document.getElementById("otStart").value), e = toMin(document.getElementById("otEnd").value);
+    let hours = 0;
+    if (!isNaN(s) && !isNaN(e)) {
+      if (e <= s) e += 24 * 60;
+      hours = Math.round(((e - s) / 60) * 2) / 2;
+    }
+    document.getElementById("otHours").value = hours.toFixed(1);
+    document.getElementById("otCalculatedCompHours").textContent = hours > 12 ? "超過 12 小時，無法申報" : `${hours.toFixed(1)} 小時`;
   },
 
   /**
@@ -1078,7 +1097,7 @@ const App = {
     const startTime = document.getElementById("otStart").value;
     const endTime = document.getElementById("otEnd").value;
     const hours = parseFloat(document.getElementById("otHours").value) || 0;
-    const compRate = parseFloat(document.getElementById("otRate").value) || 1.0;
+    const compRate = 1.0;
     const reason = document.getElementById("otReason").value;
     const submitBtn = document.getElementById("btnSubmitOvertime");
 

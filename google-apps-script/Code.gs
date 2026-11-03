@@ -214,7 +214,7 @@ function handleRequest(e) {
 
     switch (action) {
       case "ping":
-        result = { success: true, apiVersion: "20261103_SEC1", message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261103_V5", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
       // initDatabase 已自 Web API 移除：只能由管理員在 Apps Script 編輯器中手動執行。
@@ -336,7 +336,7 @@ function initDatabase(forceReset) {
     ["SICK", "病假", 0.5, false, "半薪", "因病就醫休養，一年內三十日以內半薪，不強制檢附證明"],
     ["MARRIAGE", "婚假", 8.0, true, true, "結婚法定婚假，以天(8h)為單位，全薪，需附結婚證明"],
     ["BEREAVEMENT", "喪假", 8.0, true, true, "親屬喪葬事宜，以天(8h)為單位，全薪，需附證明"],
-    ["MENSTRUAL", "生理假", 4.0, false, false, "女性同仁每月一天生理假，以半天(4h)為單位"]
+    ["MENSTRUAL", "生理假", 0.5, false, "半薪", "每月得請 1 日，可請半天；全年前 3 日不併入病假，超過部分併入病假；薪資減半發給"]
   ];
   setupSheet(ss, sheets.LEAVE_TYPES, leaveTypeHeaders, leaveTypeSeeds, isForce);
 
@@ -818,6 +818,10 @@ function syncLeaveTypes(ss) {
   });
   for (let i = 1; i < data.length; i++) {
     const id = String(data[i][idIdx]).trim();
+    if (id === "MENSTRUAL") {
+      if (isPaidIdx !== -1 && data[i][isPaidIdx] !== "半薪") ltSheet.getRange(i + 1, isPaidIdx + 1).setValue("半薪");
+      if (descIdx !== -1) ltSheet.getRange(i + 1, descIdx + 1).setValue("每月得請 1 日，可請半天；全年前 3 日不併入病假，超過部分併入病假；薪資減半發給 (性平法第 14 條)");
+    }
     if (MIN_UNIT_OVERRIDE[id] && minIdx !== -1 && parseFloat(data[i][minIdx]) !== MIN_UNIT_OVERRIDE[id]) {
       ltSheet.getRange(i + 1, minIdx + 1).setValue(MIN_UNIT_OVERRIDE[id]);
     }
@@ -916,6 +920,12 @@ function getBootstrapData(currentUserId, authToken, shouldSync) {
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   const leaveTypes = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.LEAVE_TYPES));
   leaveTypes.forEach(t => {
+    if (t.id === "MENSTRUAL") {
+      t.is_paid = "半薪";
+      t.isPaid = "HALF";
+      t.paidText = "支半薪";
+      t.min_unit = 0.5;
+    }
     if (t.id === "SICK") {
       t.requires_attachment = false;
       t.is_paid = "半薪";
@@ -1219,6 +1229,30 @@ const EVENT_LEAVE_RULES = {
   PATERNITY:   { name: "陪產檢及陪產假", maxPerRequest: 56 }, // 7 日
   MENSTRUAL:   { name: "生理假", maxPerRequest: 8, maxPerMonth: 8 } // 每月 1 日
 };
+// 法定年度上限：超過時「警告但可送出」，並在簽核紀錄標註，讓主管 / 人資知悉
+const ANNUAL_SOFT_LIMITS = {
+  PERSONAL: { name: "事假", hours: 112, basis: "勞工請假規則第 7 條：事假一年合計不超過 14 日" },
+  SICK:     { name: "病假", hours: 240, basis: "勞工請假規則第 4 條：未住院普通傷病假一年合計不超過 30 日" }
+};
+// 性別平等工作法第 14 條：生理假全年前 3 日 (24h) 不併入病假，超過部分併入病假計算；薪資均減半發給
+const MENSTRUAL_SEPARATE_HOURS = 24;
+
+// 計算某人某年度已申請 (審核中 / 已核准 / 銷假審核中) 的某假別時數
+function yearlyRequestedHours_(requests, userId, leaveTypeId, year) {
+  return requests.filter(r =>
+    r.user_id === userId && r.leave_type_id === leaveTypeId &&
+    (r.status === "PENDING" || r.status === "APPROVED" || r.status === "CANCEL_PENDING") &&
+    new Date(String(r.start_time).replace(/-/g, "/")).getFullYear() === year
+  ).reduce((sum, r) => sum + (parseFloat(r.total_hours) || 0), 0);
+}
+
+// 病假年度累計 = 病假 + 生理假超過 3 日併入病假的部分
+function yearlySickEquivalentHours_(requests, userId, year) {
+  const sick = yearlyRequestedHours_(requests, userId, "SICK", year);
+  const menstrual = yearlyRequestedHours_(requests, userId, "MENSTRUAL", year);
+  return sick + Math.max(0, menstrual - MENSTRUAL_SEPARATE_HOURS);
+}
+
 // 最小請假單位修正：生理假、陪產假允許以上午 (3.5h) / 下午 (4.5h) 請半天
 const MIN_UNIT_OVERRIDE = { MENSTRUAL: 0.5, PATERNITY: 0.5 };
 const ALL_LEAVE_TYPE_DEFAULTS = [
@@ -1339,6 +1373,28 @@ function applyLeave(params) {
     }
   }
 
+  // 事假 / 病假 / 生理假：年度法定上限檢查 (警告但可送出)
+  const limitWarnings = [];
+  const addLimitWarning = (rule, before, after) => {
+    if (after > rule.hours) {
+      limitWarnings.push(`⚠️ ${rule.name}年度累計將達 ${after} 小時，超過法定上限 ${rule.hours} 小時 (${rule.basis})。超過部分需經主管 / 人資同意。`);
+    }
+  };
+  if (leaveTypeId === "PERSONAL") {
+    const before = yearlyRequestedHours_(allRequests, userId, "PERSONAL", currentYear);
+    addLimitWarning(ANNUAL_SOFT_LIMITS.PERSONAL, before, before + totalHours);
+  }
+  let menstrualMergedHours = 0;
+  if (leaveTypeId === "MENSTRUAL") {
+    const prevM = yearlyRequestedHours_(allRequests, userId, "MENSTRUAL", currentYear);
+    menstrualMergedHours = Math.max(0, prevM + totalHours - MENSTRUAL_SEPARATE_HOURS) - Math.max(0, prevM - MENSTRUAL_SEPARATE_HOURS);
+  }
+  if (leaveTypeId === "SICK" || menstrualMergedHours > 0) {
+    const before = yearlySickEquivalentHours_(allRequests, userId, currentYear);
+    const add = leaveTypeId === "SICK" ? totalHours : menstrualMergedHours;
+    addLimitWarning(ANNUAL_SOFT_LIMITS.SICK, before, before + add);
+  }
+
   // 特休 / 補休：該年度額度尚未建立時 (例如跨年後第一次請假)，先自動建立
   if (leaveTypeId === "COMP" && carryOverComp_(ss, userId, currentYear) > 0) {
     balanceRowIndex = -1; // 結轉後重新讀取額度
@@ -1449,12 +1505,18 @@ function applyLeave(params) {
     ]);
   }
 
-  // 同步將申請單號寫入簽核歷史歷程 (approval_logs 表)
-  logApproval(ss, reqId, "LEAVE", userId, "Applicant", "PENDING", reason || "送出請假申請");
+  // 同步將申請單號寫入簽核歷史歷程 (approval_logs 表)；超過法定上限的警告一併記錄，主管簽核時看得到
+  const notes = [];
+  if (menstrualMergedHours > 0) notes.push(`本次生理假其中 ${menstrualMergedHours} 小時依性平法第 14 條併入病假計算`);
+  const logComment = [reason || "送出請假申請"].concat(notes, limitWarnings).join("｜");
+  logApproval(ss, reqId, "LEAVE", userId, "Applicant", "PENDING", logComment);
 
   return {
     success: true,
-    message: `請假申請已成功送出！單號：${reqId}，已鎖定額度 ${totalHours} 小時，等待主管審核。`,
+    message: `請假申請已成功送出！單號：${reqId}，已鎖定額度 ${totalHours} 小時，等待主管審核。` +
+      (notes.length ? " " + notes.join("；") + "。" : "") +
+      (limitWarnings.length ? " " + limitWarnings.join(" ") : ""),
+    warnings: limitWarnings,
     requestId: reqId
   };
 }
@@ -1733,11 +1795,9 @@ function applyOvertime(params) {
     return { success: false, message: "加班日期格式錯誤。" };
   }
 
-  // 補休倍率只允許系統定義的值，不接受任意數字
-  const ALLOWED_RATES = [1.0, 1.34, 1.67, 2.0];
-  const rateIn = parseFloat(compRate);
-  const rate = ALLOWED_RATES.find(r => Math.abs(r - rateIn) < 0.001) || 1.0;
-  const compHours = Math.round(otHours * rate * 10) / 10;
+  // 勞基法第 32-1 條：補休依「加班工作時數」1:1 計算 (加班費倍率與補休無關)
+  const rate = 1.0;
+  const compHours = otHours;
 
   const otSheet = ss.getSheetByName(CONFIG.SHEETS.OVERTIME_REQUESTS);
   

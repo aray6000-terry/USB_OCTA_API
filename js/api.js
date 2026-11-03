@@ -704,7 +704,7 @@ const ApiService = {
           return { success: false, message: "請完整填寫加班資料。" };
         }
 
-        const rate = parseFloat(compRate) || 1.0;
+        const rate = 1.0; // 勞基法第 32-1 條：補休 1:1
         const otHours = parseFloat(hours) || 0;
         const compHours = Math.round(otHours * rate * 10) / 10;
 
