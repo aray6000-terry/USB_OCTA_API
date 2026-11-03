@@ -14,7 +14,7 @@
  *       HR      → 所有 role 為 HR 或 Admin 的人
  *   - 每位簽核人收到一封信，列出「上次通知後新增」與「仍在等待」的請假 / 銷假 / 加班單。
  *   - 沒有待簽單的人不寄信。
- *   - 申請人不會被要求簽自己的單（自己的單改列給 HR/Admin）。
+ *   - 一般同仁不會被要求簽自己的單；最高主管 (Admin 且無上層主管) 自己的單會通知本人自核。
  */
 
 const DIGEST_CONFIG = {
@@ -96,13 +96,16 @@ function sendDailyPendingDigest() {
   items.forEach(item => {
     const applicant = userById[item.applicantId] || {};
     if (item.step === "HR") {
-      hrAdmins.filter(h => h.id !== item.applicantId).forEach(h => addTo(h.id, item));
+      hrAdmins.filter(h => h.id !== item.applicantId || h.role === "Admin").forEach(h => addTo(h.id, item));
     } else {
       const mgr = applicant.manager_id;
       if (mgr && mgr !== item.applicantId) {
         addTo(mgr, item);
+      } else if (applicant.role === "Admin") {
+        // 最高主管 (老闆) 自己的單：通知本人自行核准
+        addTo(item.applicantId, item);
       } else {
-        // 自己是自己的主管 (例如 EMP001)：改交給其他 HR/Admin，避免自簽
+        // 沒有設定主管的同仁：交給 HR/Admin
         hrAdmins.filter(h => h.id !== item.applicantId).forEach(h => addTo(h.id, item));
       }
     }

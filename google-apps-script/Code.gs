@@ -214,7 +214,7 @@ function handleRequest(e) {
 
     switch (action) {
       case "ping":
-        result = { success: true, apiVersion: "20261103_V5", message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261103_V6", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
       // initDatabase 已自 Web API 移除：只能由管理員在 Apps Script 編輯器中手動執行。
@@ -1624,12 +1624,22 @@ function cancelLeave(params) {
  *  - MANAGER 階段：申請人的直屬主管；若申請人沒有主管或主管是自己，改由 HR/Admin 簽；Admin 可代簽
  *  - HR 階段：HR 或 Admin，且不能與第一階主管為同一人
  */
+function isTopAdmin_(user) {
+  if (!user || user.role !== "Admin") return false;
+  const mgr = String(user.manager_id || "").trim();
+  return !mgr || mgr === String(user.id).trim();
+}
+
 function canReview_(ss, approverId, applicantId, step, requestId) {
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   const approver = users.find(u => u.id === approverId);
   const applicant = users.find(u => u.id === applicantId);
   if (!approver) return "找不到簽核人資料。";
-  if (approverId === applicantId) return "不能簽核自己的申請單，請由其他主管或人資簽核。";
+  if (approverId === applicantId) {
+    // 最高主管 (Admin 且沒有上層主管，例如老闆) 可以自己核准自己的單；其他人一律不行
+    if (isTopAdmin_(approver)) return null;
+    return "不能簽核自己的申請單，請由其他主管或人資簽核。";
+  }
 
   if (step === "HR") {
     if (!isAdminOrHR_(approver)) return "此單已進入人資複核階段，僅限人資或管理員簽核。";
@@ -1702,7 +1712,7 @@ function reviewLeave(params, action) {
       // 退還 used_hours (used_hours -= req.totalHours)
       updateBalanceQuota(ss, req.userId, req.leaveTypeId, currentYear, -req.totalHours, 0);
 
-      logApproval(ss, requestId, "CANCEL_LEAVE", approverId, approver ? approver.role : "Manager", "APPROVED", comment || "銷假核准，時數已退回");
+      logApproval(ss, requestId, "CANCEL_LEAVE", approverId, approverId === req.userId ? "Admin (本人自核)" : (approver ? approver.role : "Manager"), "APPROVED", comment || "銷假核准，時數已退回");
       return { success: true, message: `銷假審核已核准，已成功將 ${req.totalHours} 小時退還給員工！` };
     } else {
       reqSheet.getRange(targetRow, statusIdx + 1).setValue("APPROVED"); // 恢復為原先核准狀態
@@ -1731,8 +1741,17 @@ function reviewLeave(params, action) {
   }
 
   if (action === "APPROVED") {
-    // 檢查是否超過 3 天 (> 24 小時) 需多階 HR 審核
-    const isMultiTier = req.totalHours > CONFIG.MULTI_TIER_THRESHOLD_HOURS;
+    // 檢查是否超過 3 天 (> 24 小時) 需多階 HR 審核；最高主管自核時不再轉人資
+    const isSelfByTopAdmin = (approverId === req.userId);
+    const isMultiTier = req.totalHours > CONFIG.MULTI_TIER_THRESHOLD_HOURS && !isSelfByTopAdmin;
+
+    if (isSelfByTopAdmin) {
+      reqSheet.getRange(targetRow, statusIdx + 1).setValue("APPROVED");
+      reqSheet.getRange(targetRow, stepIdx + 1).setValue("COMPLETED");
+      transferPendingToUsed(ss, req.userId, req.leaveTypeId, currentYear, req.totalHours);
+      logApproval(ss, requestId, "LEAVE", approverId, "Admin (本人自核)", "APPROVED", comment || "最高主管本人自核");
+      return { success: true, message: "已自行核准您的請假單（已記錄為本人自核）。" };
+    }
 
     if (req.currentStep === "MANAGER") {
       if (isMultiTier) {
@@ -1939,7 +1958,7 @@ function reviewOvertime(params, action) {
     const currentYear = new Date(ot.date).getFullYear();
     addCompLeaveQuota(ss, ot.userId, currentYear, ot.compHours);
 
-    logApproval(ss, overtimeId, "OVERTIME", approverId, approver ? approver.role : "Manager", "APPROVED", comment || "加班申報核准，已發放補休額度");
+    logApproval(ss, overtimeId, "OVERTIME", approverId, approverId === ot.userId ? "Admin (本人自核)" : (approver ? approver.role : "Manager"), "APPROVED", comment || "加班申報核准，已發放補休額度");
     return { success: true, message: `加班申報已核准！已成功發放 ${ot.compHours} 小時補休額度至員工存摺。` };
   }
 
