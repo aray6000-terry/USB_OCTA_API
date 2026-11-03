@@ -1137,7 +1137,7 @@
 
           <div class="form-group" style="margin-bottom: 14px;">
             <label class="form-label">預設登入密碼</label>
-            <input type="text" class="form-control" id="newUserPassword" value="123456" placeholder="預設 123456">
+            <input type="text" class="form-control" id="newUserPassword" value="" placeholder="留空則自動產生臨時密碼">
           </div>
 
           <!-- 勞基法特休即時預覽 -->
@@ -1224,12 +1224,12 @@
 
           <div class="form-group" style="margin-bottom: 14px;">
             <label class="form-label">新密碼 (New Password) <span class="req-star">*</span></label>
-            <input type="password" class="form-control" id="newPasswordInput" required minlength="4" placeholder="請輸入新密碼 (至少 4 碼)">
+            <input type="password" class="form-control" id="newPasswordInput" required minlength="8" placeholder="至少 8 碼，需含英文與數字">
           </div>
 
           <div class="form-group" style="margin-bottom: 14px;">
             <label class="form-label">確認新密碼 (Confirm New Password) <span class="req-star">*</span></label>
-            <input type="password" class="form-control" id="confirmPasswordInput" required minlength="4" placeholder="請再次輸入新密碼">
+            <input type="password" class="form-control" id="confirmPasswordInput" required minlength="8" placeholder="請再次輸入新密碼">
           </div>
 
           <div id="passwordMismatchError" style="display: none; padding: 8px 12px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: var(--radius-md); font-size: 0.82rem; color: #be123c;">

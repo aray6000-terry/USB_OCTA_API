@@ -34,32 +34,112 @@ const CONFIG = {
   }
 };
 
-const AUTH_SECRET = "LEAVE_SYS_SECRET_KEY_2026";
+// ======================== 身分驗證與密碼安全 ========================
+// 金鑰改存「指令碼屬性」(專案設定 > 指令碼屬性 > AUTH_SECRET)，不再寫死在公開程式碼中。
+// 第一次執行時若不存在會自動產生一組隨機金鑰；更換金鑰會讓所有人需要重新登入。
+function getAuthSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty("AUTH_SECRET");
+  if (!secret) {
+    secret = Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty("AUTH_SECRET", secret);
+  }
+  return secret;
+}
+
+// 每位使用者的 token 版本號：改密碼 / 停權時 +1，舊 token 立即失效
+function getTokenVersion_(userId) {
+  return PropertiesService.getScriptProperties().getProperty("TV_" + userId) || "0";
+}
+function bumpTokenVersion_(userId) {
+  const v = parseInt(getTokenVersion_(userId), 10) + 1;
+  PropertiesService.getScriptProperties().setProperty("TV_" + userId, String(v));
+}
+
+function signPayload_(payload) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payload, getAuthSecret_()));
+}
 
 function createAuthToken(userId, role) {
   const expireAt = Date.now() + 12 * 60 * 60 * 1000; // 12 小時
-  const payload = `${userId}:${role}:${expireAt}`;
-  const signature = Utilities.base64Encode(
-    Utilities.computeHmacSha256Signature(payload, AUTH_SECRET)
-  );
-  return `${Utilities.base64Encode(payload)}.${signature}`;
+  const payload = `${userId}:${expireAt}:${getTokenVersion_(userId)}`;
+  return `${Utilities.base64EncodeWebSafe(payload)}.${signPayload_(payload)}`;
 }
 
 function verifyAuthToken(token) {
-  if (!token || token.indexOf(".") === -1) return null;
+  if (!token || typeof token !== "string" || token.indexOf(".") === -1) return null;
   try {
     const [b64Payload, sig] = token.split(".");
-    const payload = Utilities.newBlob(Utilities.base64Decode(b64Payload)).getDataAsString();
-    const expectedSig = Utilities.base64Encode(
-      Utilities.computeHmacSha256Signature(payload, AUTH_SECRET)
-    );
-    if (sig !== expectedSig) return null;
-    const [userId, role, expireAt] = payload.split(":");
-    if (Date.now() > parseInt(expireAt, 10)) return null;
-    return { userId, role };
+    const payload = Utilities.newBlob(Utilities.base64DecodeWebSafe(b64Payload)).getDataAsString();
+    if (!safeEquals_(sig, signPayload_(payload))) return null;
+    const [userId, expireAt, tv] = payload.split(":");
+    if (!userId || Date.now() > parseInt(expireAt, 10)) return null;
+    if (tv !== getTokenVersion_(userId)) return null;
+    return { userId };
   } catch (e) {
     return null;
   }
+}
+
+function safeEquals_(a, b) {
+  a = String(a || ""); b = String(b || "");
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// 密碼雜湊：格式 sha256$<salt>$<hex>，迭代 10000 次
+function hashPassword_(plain, salt) {
+  salt = salt || Utilities.getUuid().replace(/-/g, "");
+  let bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + ":" + String(plain), Utilities.Charset.UTF_8);
+  for (let i = 0; i < 10000; i++) {
+    bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes.concat(Utilities.newBlob(salt).getBytes()));
+  }
+  const hex = bytes.map(b => ("0" + (b & 0xff).toString(16)).slice(-2)).join("");
+  return `sha256$${salt}$${hex}`;
+}
+
+function verifyPassword_(plain, stored) {
+  stored = String(stored == null ? "" : stored).trim();
+  if (!stored) return false;
+  if (stored.indexOf("sha256$") === 0) {
+    const salt = stored.split("$")[1];
+    return safeEquals_(hashPassword_(plain, salt), stored);
+  }
+  // 舊版明文密碼：仍可比對，登入成功後會自動升級為雜湊
+  return safeEquals_(String(plain).trim(), stored);
+}
+
+function validateNewPassword_(pw) {
+  pw = String(pw || "");
+  if (pw.length < 8) return "新密碼長度至少需 8 碼。";
+  if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return "新密碼需同時包含英文字母與數字。";
+  if (/^(12345678|password|qwerty)/i.test(pw)) return "新密碼過於簡單，請更換。";
+  return null;
+}
+
+function generateTempPassword_() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  let out = "";
+  for (let i = 0; i < 10; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+  return out + Math.floor(Math.random() * 10);
+}
+
+// 登入失敗鎖定：同一帳號 15 分鐘內錯 5 次即鎖 15 分鐘
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_SECONDS = 15 * 60;
+function loginFailKey_(email) {
+  return "LF_" + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, email)).slice(0, 40);
+}
+
+function findUserById_(ss, userId) {
+  const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
+  return users.find(u => String(u.id).trim() === String(userId).trim()) || null;
+}
+
+function isAdminOrHR_(user) {
+  return !!user && (user.role === "Admin" || user.role === "HR");
 }
 
 // ======================== 試算表存取核心 (支援 Google Sheet 容器綁定與 Library 程式庫模式) ========================
@@ -89,8 +169,15 @@ function doPost(e) {
   return handleRequest(e);
 }
 
+// 不需登入即可呼叫的動作
+const PUBLIC_ACTIONS = { ping: true, login: true };
+// 僅 Admin / HR 可呼叫的動作
+const ADMIN_ACTIONS = {
+  adminUpdateBalance: true, adminUpdateUser: true, adminCreateUser: true, adminDeleteUser: true,
+  syncStatutoryAnnualLeaves: true, syncHolidays: true
+};
+
 function handleRequest(e) {
-  // 處理跨來源資源共享 (CORS)
   const output = ContentService.createTextOutput();
   output.setMimeType(ContentService.MimeType.JSON);
 
@@ -105,18 +192,35 @@ function handleRequest(e) {
     const action = params.action || "ping";
     let result = { success: false, message: "Unknown action" };
 
-    // 依據 action 進行路由分派
+    // ---------- 統一身分驗證閘道 ----------
+    // 身分一律以伺服器簽發的 token 為準，忽略前端自行傳入的 userId / approverId。
+    let me = null;
+    if (!PUBLIC_ACTIONS[action]) {
+      const tokenPayload = verifyAuthToken(params.token);
+      const ss = getSpreadsheet();
+      me = tokenPayload ? findUserById_(ss, tokenPayload.userId) : null;
+      if (!me) {
+        output.setContent(JSON.stringify({ success: false, authError: true, message: "登入已逾時或無效，請重新登入。" }));
+        return output;
+      }
+      if (ADMIN_ACTIONS[action] && !isAdminOrHR_(me)) {
+        output.setContent(JSON.stringify({ success: false, message: "權限不足：此功能僅限人資或系統管理員使用。" }));
+        return output;
+      }
+      params.userId = me.id;
+      params.approverId = me.id;
+      params._me = me;
+    }
+
     switch (action) {
       case "ping":
-        result = { success: true, apiVersion: "20261008_V3", message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261103_SEC1", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
-      case "initDatabase":
-        result = initDatabase(params.forceReset);
-        break;
+      // initDatabase 已自 Web API 移除：只能由管理員在 Apps Script 編輯器中手動執行。
 
       case "getBootstrapData":
-        result = getBootstrapData(params.userId, params.token, params.shouldSync);
+        result = getBootstrapData(me.id, null, isAdminOrHR_(me) ? params.shouldSync : false);
         break;
 
       case "login":
@@ -124,14 +228,7 @@ function handleRequest(e) {
         break;
 
       case "calculateHours":
-        result = {
-          success: true,
-          data: calculateLeaveHours(params.startTime, params.endTime)
-        };
-        break;
-
-      case "login":
-        result = loginUser(params.email, params.password);
+        result = { success: true, data: calculateLeaveHours(params.startTime, params.endTime) };
         break;
 
       case "applyLeave":
@@ -197,12 +294,9 @@ function handleRequest(e) {
     output.setContent(JSON.stringify(result));
     return output;
   } catch (err) {
-    const errorRes = {
-      success: false,
-      message: err.message || "Internal Server Error",
-      stack: err.stack
-    };
-    output.setContent(JSON.stringify(errorRes));
+    // 不再回傳 stack trace，詳細錯誤只寫入伺服器記錄
+    console.error(err && err.stack ? err.stack : err);
+    output.setContent(JSON.stringify({ success: false, message: "伺服器處理失敗，請稍後再試或聯絡管理員。" }));
     return output;
   }
 }
@@ -216,19 +310,20 @@ function initDatabase(forceReset) {
 
   // 1. users 表 (新增 hire_date 到職日欄位，涵蓋 8 大部門)
   const userHeaders = ["id", "name", "email", "password_hash", "department_id", "department_name", "manager_id", "role", "hire_date", "created_at"];
+  // 種子資料不含真實 Email 與密碼：建表後請在編輯器執行 adminResetPasswordFromEditor() 設定密碼
   const userSeeds = [
-    ["EMP001", "李泰叡", "aray6000@hotmail.com", "123456", "DEPT_MGMT", "管理部", "EMP001", "Admin", "2018-04-16", "2026-01-01 09:00:00"],
-    ["EMP002", "陳勃毅", "tony6070591135@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2023-08-07", "2026-01-01 09:00:00"],
-    ["EMP003", "何貫宇", "abc35789abc35789@gmail.com", "123456", "DEPT_SALES", "業務部", "EMP001", "Employee", "2024-02-26", "2026-01-01 09:00:00"],
-    ["EMP004", "劉彩雲", "amyliupp@gmail.com", "123456", "DEPT_HR", "人資部", "EMP001", "HR", "2024-03-18", "2026-01-01 09:00:00"],
-    ["EMP005", "廖國寓", "taisan648@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2024-10-21", "2026-01-01 09:00:00"],
-    ["EMP006", "何瑋恩", "hew183273@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-03-04", "2026-01-01 09:00:00"],
-    ["EMP007", "簡昕儀", "kitty89092616@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-05-05", "2026-01-01 09:00:00"],
-    ["EMP008", "江嘉偉", "ccw891129@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-07-23", "2026-01-01 09:00:00"],
-    ["EMP009", "徐堉桉", "yy0937010806@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-08-01", "2026-01-01 09:00:00"],
-    ["EMP010", "侯凱嚴", "ken.work345@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2026-01-12", "2026-01-01 09:00:00"],
-    ["EMP011", "傅秉和", "keionmio028@gmail.com", "123456", "DEPT_RD", "研發部", "EMP001", "Employee", "2026-01-12", "2026-01-01 09:00:00"],
-    ["EMP012", "蔡倢羚", "a0977001617@gmail.com", "123456", "DEPT_MGMT", "管理部", "EMP001", "Employee", "2026-03-16", "2026-01-01 09:00:00"]
+    ["EMP001", "李泰叡", "emp001@example.com", "", "DEPT_MGMT", "管理部", "EMP001", "Admin", "2018-04-16", "2026-01-01 09:00:00"],
+    ["EMP002", "陳勃毅", "emp002@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2023-08-07", "2026-01-01 09:00:00"],
+    ["EMP003", "何貫宇", "emp003@example.com", "", "DEPT_SALES", "業務部", "EMP001", "Employee", "2024-02-26", "2026-01-01 09:00:00"],
+    ["EMP004", "劉彩雲", "emp004@example.com", "", "DEPT_HR", "人資部", "EMP001", "HR", "2024-03-18", "2026-01-01 09:00:00"],
+    ["EMP005", "廖國寓", "emp005@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2024-10-21", "2026-01-01 09:00:00"],
+    ["EMP006", "何瑋恩", "emp006@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-03-04", "2026-01-01 09:00:00"],
+    ["EMP007", "簡昕儀", "emp007@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-05-05", "2026-01-01 09:00:00"],
+    ["EMP008", "江嘉偉", "emp008@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-07-23", "2026-01-01 09:00:00"],
+    ["EMP009", "徐堉桉", "emp009@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2025-08-01", "2026-01-01 09:00:00"],
+    ["EMP010", "侯凱嚴", "emp010@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2026-01-12", "2026-01-01 09:00:00"],
+    ["EMP011", "傅秉和", "emp011@example.com", "", "DEPT_RD", "研發部", "EMP001", "Employee", "2026-01-12", "2026-01-01 09:00:00"],
+    ["EMP012", "蔡倢羚", "emp012@example.com", "", "DEPT_MGMT", "管理部", "EMP001", "Employee", "2026-03-16", "2026-01-01 09:00:00"]
   ];
   setupSheet(ss, sheets.USERS, userHeaders, userSeeds, isForce);
 
@@ -310,6 +405,31 @@ function initDatabase(forceReset) {
     success: true,
     message: isForce ? "Google Sheet 資料庫已強制重置為初始種子資料！" : "Google Sheet 資料庫結構檢查完成（已保留原有資料，未覆蓋）。"
   };
+}
+
+/**
+ * 僅限在 Apps Script 編輯器手動執行：重設某位員工的密碼。
+ * 用法：修改下方 USER_ID / NEW_PASSWORD 後按「執行」，執行完請把 NEW_PASSWORD 清空。
+ */
+function adminResetPasswordFromEditor() {
+  const USER_ID = "EMP001";
+  const NEW_PASSWORD = "";
+  if (!NEW_PASSWORD) throw new Error("請先在程式中填入 NEW_PASSWORD");
+  const err = validateNewPassword_(NEW_PASSWORD);
+  if (err) throw new Error(err);
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  const data = sheet.getDataRange().getValues();
+  const idIdx = data[0].indexOf("id"), passIdx = data[0].indexOf("password_hash");
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][idIdx]).trim() === USER_ID) {
+      sheet.getRange(i + 1, passIdx + 1).setValue(hashPassword_(NEW_PASSWORD));
+      bumpTokenVersion_(USER_ID);
+      Logger.log("已重設 " + USER_ID + " 的密碼");
+      return;
+    }
+  }
+  throw new Error("找不到 " + USER_ID);
 }
 
 function setupSheet(ss, sheetName, headers, seedData, forceReset) {
@@ -814,16 +934,10 @@ function getBootstrapData(currentUserId, authToken, shouldSync) {
   logs.sort((a, b) => new Date(b.acted_at || 0) - new Date(a.acted_at || 0));
   const holidays = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.HOLIDAYS));
 
-  // 驗證 Token 提取身分；若無 Token 則以傳入之 currentUserId 為準
-  const tokenPayload = verifyAuthToken(authToken);
-  const activeUserId = tokenPayload ? tokenPayload.userId : (currentUserId || (users[0] ? users[0].id : null));
-
-  let currentUser = null;
-  if (activeUserId) {
-    currentUser = users.find(u => u.id === activeUserId);
-  }
-  if (!currentUser && users.length > 0) {
-    currentUser = users[0]; // 預設第一位員工
+  // 身分已由 handleRequest 依 token 驗證，這裡只接受伺服器端確認過的 userId；找不到就拒絕，不再預設第一位員工
+  const currentUser = users.find(u => u.id === currentUserId) || null;
+  if (!currentUser) {
+    return { success: false, authError: true, message: "找不到登入者資料，請重新登入。" };
   }
 
   // 1. 嚴格過濾：currentUser 物件徹底清除敏感密碼欄位
@@ -913,22 +1027,44 @@ function getBootstrapData(currentUserId, authToken, shouldSync) {
 
 function loginUser(email, password) {
   const ss = getSpreadsheet();
-  const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
-  
   const inputEmail = String(email || "").trim().toLowerCase();
-  const inputPass = String(password !== undefined ? password : "").trim();
-
-  const user = users.find(u => {
-    const uEmail = String(u.email || "").trim().toLowerCase();
-    const uPass = String(u.password_hash !== undefined ? u.password_hash : "").trim();
-    return uEmail === inputEmail && uPass === inputPass;
-  });
-
-  if (!user) {
-    return { success: false, message: "帳號或密碼錯誤，請重新確認輸入。" };
+  const inputPass = String(password !== undefined ? password : "");
+  if (!inputEmail || !inputPass) {
+    return { success: false, message: "請輸入電子信箱與密碼。" };
   }
 
-  // 複製使用者物件並移除敏感密碼欄位
+  // 失敗次數鎖定
+  const cache = CacheService.getScriptCache();
+  const failKey = loginFailKey_(inputEmail);
+  const fails = parseInt(cache.get(failKey) || "0", 10);
+  if (fails >= LOGIN_MAX_FAILS) {
+    return { success: false, message: "登入失敗次數過多，帳號已暫時鎖定 15 分鐘，請稍後再試。" };
+  }
+
+  const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
+  const data = userSheet.getDataRange().getValues();
+  const headers = data[0];
+  const emailIdx = headers.indexOf("email");
+  const passIdx = headers.indexOf("password_hash");
+
+  let rowIndex = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][emailIdx] || "").trim().toLowerCase() === inputEmail) { rowIndex = i; break; }
+  }
+
+  if (rowIndex === -1 || !verifyPassword_(inputPass, data[rowIndex][passIdx])) {
+    cache.put(failKey, String(fails + 1), LOGIN_LOCK_SECONDS);
+    return { success: false, message: "帳號或密碼錯誤，請重新確認輸入。" };
+  }
+  cache.remove(failKey);
+
+  // 舊版明文密碼：登入成功後自動升級為雜湊儲存
+  const stored = String(data[rowIndex][passIdx] || "").trim();
+  if (stored.indexOf("sha256$") !== 0) {
+    userSheet.getRange(rowIndex + 1, passIdx + 1).setValue(hashPassword_(inputPass));
+  }
+
+  const user = sheetToObjects(userSheet)[rowIndex - 1];
   const userSafe = {
     id: user.id,
     name: user.name,
@@ -940,25 +1076,26 @@ function loginUser(email, password) {
     created_at: user.created_at
   };
 
-  const token = createAuthToken(user.id, user.role);
+  // 仍在使用預設密碼者，提示前端要求改密碼
+  const mustChangePassword = (inputPass === "123456");
 
   return {
     success: true,
-    message: "登入成功",
-    token: token,
+    message: mustChangePassword ? "登入成功，您仍在使用預設密碼，請立即修改密碼。" : "登入成功",
+    token: createAuthToken(user.id, user.role),
+    mustChangePassword: mustChangePassword,
     user: userSafe
   };
 }
 
 function changePassword(params) {
-  const { userId, oldPassword, newPassword } = params;
+  const userId = params.userId; // 由 token 決定，無法替他人改密碼
+  const { oldPassword, newPassword } = params;
   if (!userId || !oldPassword || !newPassword) {
     return { success: false, message: "請完整填寫原密碼與新密碼！" };
   }
-
-  if (String(newPassword).length < 4) {
-    return { success: false, message: "新密碼長度至少需 4 碼以上！" };
-  }
+  const pwErr = validateNewPassword_(newPassword);
+  if (pwErr) return { success: false, message: pwErr };
 
   const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
@@ -968,28 +1105,25 @@ function changePassword(params) {
   const headers = userData[0];
   const idIdx = headers.indexOf("id");
   const passIdx = headers.indexOf("password_hash");
-
   if (idIdx === -1 || passIdx === -1) {
     return { success: false, message: "使用者表結構欄位遺失" };
   }
 
   for (let i = 1; i < userData.length; i++) {
     if (String(userData[i][idIdx]).trim() === String(userId).trim()) {
-      const currentPass = String(userData[i][passIdx] !== undefined ? userData[i][passIdx] : "").trim();
-      if (currentPass !== String(oldPassword).trim()) {
+      if (!verifyPassword_(oldPassword, userData[i][passIdx])) {
         return { success: false, message: "目前密碼輸入錯誤，請重新確認！" };
       }
-
-      // 更新密碼至 users 表
-      userSheet.getRange(i + 1, passIdx + 1).setValue(String(newPassword).trim());
+      userSheet.getRange(i + 1, passIdx + 1).setValue(hashPassword_(newPassword));
+      bumpTokenVersion_(userId); // 其他裝置上的舊登入立即失效
       return {
         success: true,
-        message: "密碼修改成功！下次登入請使用新密碼。"
+        reLogin: true,
+        message: "密碼修改成功！請使用新密碼重新登入。"
       };
     }
   }
-
-  return { success: false, message: `找不到員工編號: ${userId}` };
+  return { success: false, message: "找不到使用者資料。" };
 }
 
 // ======================== 智慧工時計算引擎 ========================
@@ -1359,6 +1493,35 @@ function cancelLeave(params) {
 
 // ======================== 主管與 HR 審核機制 ========================
 
+/**
+ * 簽核權限檢查：
+ *  - 任何人都不能簽自己的單
+ *  - MANAGER 階段：申請人的直屬主管；若申請人沒有主管或主管是自己，改由 HR/Admin 簽；Admin 可代簽
+ *  - HR 階段：HR 或 Admin，且不能與第一階主管為同一人
+ */
+function canReview_(ss, approverId, applicantId, step, requestId) {
+  const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
+  const approver = users.find(u => u.id === approverId);
+  const applicant = users.find(u => u.id === applicantId);
+  if (!approver) return "找不到簽核人資料。";
+  if (approverId === applicantId) return "不能簽核自己的申請單，請由其他主管或人資簽核。";
+
+  if (step === "HR") {
+    if (!isAdminOrHR_(approver)) return "此單已進入人資複核階段，僅限人資或管理員簽核。";
+    const logs = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.APPROVAL_LOGS));
+    const firstTier = logs.find(l => l.request_id === requestId && l.status === "APPROVED" && l.approver_role === "Direct Manager");
+    if (firstTier && firstTier.approver_id === approverId) return "雙階簽核需由不同人員完成，您已簽過第一階。";
+    return null;
+  }
+
+  const mgrId = applicant ? String(applicant.manager_id || "").trim() : "";
+  const mgrExists = mgrId && mgrId !== applicantId && users.some(u => u.id === mgrId);
+  if (mgrExists && approverId === mgrId) return null;
+  if (approver.role === "Admin") return null;
+  if (!mgrExists && isAdminOrHR_(approver)) return null;
+  return "您不是此申請人的直屬主管，無權簽核。";
+}
+
 function reviewLeave(params, action) {
   const { requestId, approverId, comment } = params;
   const ss = getSpreadsheet();
@@ -1397,6 +1560,9 @@ function reviewLeave(params, action) {
   if (!req) {
     return { success: false, message: "找不到該筆請假申請單。" };
   }
+
+  const permErr = canReview_(ss, approverId, req.userId, req.status === "CANCEL_PENDING" ? "MANAGER" : req.currentStep, requestId);
+  if (permErr) return { success: false, message: permErr };
 
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   const approver = users.find(u => u.id === approverId);
@@ -1482,12 +1648,32 @@ function applyOvertime(params) {
   const { userId, date, startTime, endTime, hours, compRate, reason } = params;
   const ss = getSpreadsheet();
 
-  if (!userId || !date || !startTime || !endTime || !hours) {
+  if (!userId || !date || !startTime || !endTime) {
     return { success: false, message: "請完整填寫加班資料。" };
   }
 
-  const rate = parseFloat(compRate) || 1.0;
-  const otHours = parseFloat(hours) || 0;
+  // 加班時數一律由伺服器依起訖時間計算，不採信前端傳入的 hours
+  const toMin = t => {
+    const m = String(t || "").match(/(\d{1,2}):(\d{2})/);
+    return m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : NaN;
+  };
+  let startMin = toMin(startTime), endMin = toMin(endTime);
+  if (isNaN(startMin) || isNaN(endMin)) {
+    return { success: false, message: "加班起訖時間格式錯誤 (需為 HH:mm)。" };
+  }
+  if (endMin <= startMin) endMin += 24 * 60; // 跨午夜
+  const otHours = Math.round(((endMin - startMin) / 60) * 2) / 2; // 以 0.5 小時為單位
+  if (otHours <= 0 || otHours > 12) {
+    return { success: false, message: "單次加班時數需介於 0.5 ~ 12 小時。" };
+  }
+  if (isNaN(new Date(date).getTime())) {
+    return { success: false, message: "加班日期格式錯誤。" };
+  }
+
+  // 補休倍率只允許系統定義的值，不接受任意數字
+  const ALLOWED_RATES = [1.0, 1.34, 1.67, 2.0];
+  const rateIn = parseFloat(compRate);
+  const rate = ALLOWED_RATES.find(r => Math.abs(r - rateIn) < 0.001) || 1.0;
   const compHours = Math.round(otHours * rate * 10) / 10;
 
   const otSheet = ss.getSheetByName(CONFIG.SHEETS.OVERTIME_REQUESTS);
@@ -1610,6 +1796,9 @@ function reviewOvertime(params, action) {
   if (ot.status !== "PENDING") {
     return { success: false, message: `此加班單狀態為 ${ot.status}，無法再審核。` };
   }
+
+  const permErr = canReview_(ss, approverId, ot.userId, "MANAGER", overtimeId);
+  if (permErr) return { success: false, message: permErr };
 
   const users = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.USERS));
   const approver = users.find(u => u.id === approverId);
@@ -1758,7 +1947,9 @@ function adminUpdateBalance(params) {
 
   for (let i = 1; i < balData.length; i++) {
     if (balData[i][idIdx] === balanceId) {
-      balSheet.getRange(i + 1, totalIdx + 1).setValue(parseFloat(totalHours) || 0);
+      const v = parseFloat(totalHours);
+      if (isNaN(v) || v < 0 || v > 2000) return { success: false, message: "額度數值不合理 (需介於 0 ~ 2000 小時)。" };
+      balSheet.getRange(i + 1, totalIdx + 1).setValue(v);
       return { success: true, message: "額度已成功更新。" };
     }
   }
@@ -1767,6 +1958,11 @@ function adminUpdateBalance(params) {
 
 function adminUpdateUser(params) {
   const { id, name, department_name, manager_id, role, hire_date } = params;
+  const me = params._me;
+  const VALID_ROLES = ["Employee", "Manager", "HR", "Admin"];
+  if (role && VALID_ROLES.indexOf(role) === -1) return { success: false, message: "無效的角色。" };
+  if (role && (!me || me.role !== "Admin")) return { success: false, message: "僅系統管理員可變更角色權限。" };
+  if (manager_id && manager_id === id) return { success: false, message: "員工的直屬主管不能是自己。" };
   const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);
   const userData = userSheet.getDataRange().getValues();
@@ -1805,6 +2001,10 @@ function adminUpdateUser(params) {
 
 function adminCreateUser(params) {
   const { id, name, email, password, department_id, department_name, manager_id, role, hire_date } = params;
+  const me = params._me;
+  if (role && role !== "Employee" && (!me || me.role !== "Admin")) {
+    return { success: false, message: "僅系統管理員可建立非一般員工角色的帳號。" };
+  }
   if (!name || !email) {
     return { success: false, message: "請務必填寫員工姓名與電子信箱！" };
   }
@@ -1832,7 +2032,16 @@ function adminCreateUser(params) {
     return { success: false, message: `Email: ${email} 已存在於系統中，請勿重複新增！` };
   }
 
-  const passwordHash = password || "123456";
+  // 不再使用固定預設密碼：未指定時產生隨機臨時密碼，只在本次回應顯示一次
+  let tempPassword = null;
+  let plainPassword = password ? String(password) : "";
+  if (plainPassword) {
+    const pwErr = validateNewPassword_(plainPassword);
+    if (pwErr) return { success: false, message: "初始密碼不符規則：" + pwErr };
+  } else {
+    plainPassword = tempPassword = generateTempPassword_();
+  }
+  const passwordHash = hashPassword_(plainPassword);
   const deptMap = {
     "研發部": "DEPT_RD",
     "設計部": "DEPT_DESIGN",
@@ -1896,7 +2105,9 @@ function adminCreateUser(params) {
 
   return {
     success: true,
-    message: `員工 ${name} (${newId}) 已成功新增！系統已自動依勞基法核發特休 ${annualHours} 小時並初始化事病假額度。`,
+    message: `員工 ${name} (${newId}) 已成功新增！系統已自動依勞基法核發特休 ${annualHours} 小時並初始化事病假額度。` +
+      (tempPassword ? ` 臨時密碼：${tempPassword}（僅顯示這一次，請轉交本人並要求登入後立即修改）` : ""),
+    tempPassword: tempPassword,
     user: {
       id: newId,
       name,
@@ -1915,6 +2126,13 @@ function adminDeleteUser(params) {
   if (!id) {
     return { success: false, message: "請指定要刪除的員工 ID！" };
   }
+  if (params._me && String(id).trim() === params._me.id) {
+    return { success: false, message: "不能刪除自己的帳號。" };
+  }
+  if (!params._me || params._me.role !== "Admin") {
+    return { success: false, message: "僅系統管理員可刪除員工帳號。" };
+  }
+  bumpTokenVersion_(String(id).trim());
 
   const ss = getSpreadsheet();
   const userSheet = ss.getSheetByName(CONFIG.SHEETS.USERS);

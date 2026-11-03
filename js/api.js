@@ -146,7 +146,9 @@ const ApiService = {
         if (!gasUrl) {
           throw new Error("尚未配置 Google Apps Script 連線網址");
         }
-        const payload = Object.assign({ action: action }, params);
+        // 每個請求都附上登入 token，後端以 token 判定身分
+        const authToken = sessionStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN) || localStorage.getItem(SYSTEM_CONFIG.STORAGE_KEYS.AUTH_TOKEN);
+        const payload = Object.assign({ action: action }, params, authToken ? { token: authToken } : {});
         const response = await fetch(gasUrl, {
           method: "POST",
           headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -171,6 +173,12 @@ const ApiService = {
         }
 
         this.setConnectionStatus("online");
+
+        // token 失效：強制登出，不降級到本機資料
+        if (result && result.authError) {
+          if (typeof App !== "undefined" && App.handleLogout) App.handleLogout();
+          return result;
+        }
 
         // 若遠端 GAS 回報不支援此 action (如尚未更新部署的 login)，平滑降級至本機模組處理
         if (result && !result.success && typeof result.message === "string" && result.message.indexOf("Action not supported") !== -1) {
@@ -964,25 +972,6 @@ const ApiService = {
   async login(email, password) {
     const cleanEmail = String(email || "").trim().toLowerCase();
     const cleanPass = String(password || "").trim();
-
-    // 1. 若為最高管理者登入 (aray6000@hotmail.com 或 admin@company.com / 123456)
-    // 預防線上 Google Sheet users 表中 EMP001 的 password_hash 欄位空白或格式差異，提供最高管理者安全直通容錯
-    if ((cleanEmail === "aray6000@hotmail.com" || cleanEmail === "admin@company.com") && cleanPass === "123456") {
-      try {
-        const directRes = await this.callApi("login", { email, password });
-        if (directRes && directRes.success) return directRes;
-      } catch (e) {}
-
-      // 若遠端 sheet 未寫入密碼，改由雲端授權直接載入線上 EMP001
-      const bootRes = await this.getBootstrapData("EMP001");
-      if (bootRes && bootRes.success && bootRes.data && bootRes.data.currentUser) {
-        return {
-          success: true,
-          message: "管理者安全授權登入成功",
-          user: bootRes.data.currentUser
-        };
-      }
-    }
 
     return this.callApi("login", { email, password });
   },

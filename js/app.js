@@ -147,6 +147,9 @@ const App = {
         this.navigate("dashboard");
         this.hideLoading();
         this.showToast(`歡迎回來，${res.user.name} (${res.user.department_name} ${res.user.role})！`, "success");
+        if (res.mustChangePassword) {
+          setTimeout(() => alert("⚠️ 您目前仍在使用預設密碼，請立即到「系統設定」修改密碼（至少 8 碼，需含英文與數字）。"), 300);
+        }
       } else {
         if (errorBanner) {
           errorBanner.style.display = "flex";
@@ -174,29 +177,6 @@ const App = {
     document.getElementById("loginEmail").value = email;
     document.getElementById("loginPassword").value = password;
     await this.handleLogin();
-  },
-
-  /**
-   * 一鍵以最高管理者 (李泰叡 / Admin) 直通登入
-   */
-  async directLoginAdmin() {
-    this.showLoading("最高管理者身分授權中...", "正在載入個人差勤額度與雲端資料庫...");
-    try {
-      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.SESSION_LOGGED_IN, "true");
-      localStorage.setItem(SYSTEM_CONFIG.STORAGE_KEYS.ACTIVE_USER_ID, "EMP001");
-      const loginOverlay = document.getElementById("loginScreen");
-      if (loginOverlay) loginOverlay.classList.add("hidden");
-
-      await this.loadData("EMP001");
-      this.renderHeader();
-      this.navigate("dashboard");
-      this.showToast(`歡迎回來，${this.state.currentUser ? this.state.currentUser.name : "李泰叡"} (系統最高管理者 Admin)！`, "success");
-    } catch (err) {
-      console.error("管理者直通登入失敗:", err);
-      this.showToast("登入授權失敗：" + err.message, "error");
-    } finally {
-      this.hideLoading();
-    }
   },
 
   /**
@@ -2461,7 +2441,7 @@ const App = {
     document.getElementById("newUserId").value = "";
     document.getElementById("newUserEmail").value = "";
     document.getElementById("newUserHireDate").value = LeaveEngine.formatDateOnly(new Date());
-    document.getElementById("newUserPassword").value = "123456";
+    document.getElementById("newUserPassword").value = "";
 
     // 動態由 Google Sheet (this.state.users) 載入實際存在之同仁名冊，並 100% 呈現其在 Sheet 中的真實 role 角色
     const mgrSelect = document.getElementById("newUserManager");
@@ -2515,7 +2495,7 @@ const App = {
     const manager_id = document.getElementById("newUserManager").value;
     const role = document.getElementById("newUserRole").value;
     const hire_date = document.getElementById("newUserHireDate").value;
-    const password = document.getElementById("newUserPassword").value.trim() || "123456";
+    const password = document.getElementById("newUserPassword").value.trim();
     const btn = document.getElementById("btnSubmitAddUser");
 
     this.state.isSubmitting = true;
@@ -2716,6 +2696,7 @@ const App = {
       if (res.success) {
         this.showToast(res.message || "密碼修改成功！", "success");
         this.closeModal("changePasswordModal");
+        if (res.reLogin) setTimeout(() => this.handleLogout(), 1200);
       } else {
         this.showToast(res.message || "密碼修改失敗", "error");
       }
