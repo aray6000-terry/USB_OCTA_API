@@ -214,7 +214,7 @@ function handleRequest(e) {
 
     switch (action) {
       case "ping":
-        result = { success: true, apiVersion: "20261106_V7", message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261106_V8", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
       // initDatabase 已自 Web API 移除：只能由管理員在 Apps Script 編輯器中手動執行。
@@ -249,6 +249,10 @@ function handleRequest(e) {
 
       case "applyOvertime":
         result = applyOvertime(params);
+        break;
+
+      case "batchReview":
+        result = batchReview(params);
         break;
 
       case "approveOvertime":
@@ -1786,6 +1790,47 @@ function reviewLeave(params, action) {
   }
 
   return { success: false, message: "無效的操作指令。" };
+}
+
+/**
+ * 批次簽核：一次核准 / 退回多張單 (每張仍逐一套用相同的權限與額度規則)
+ * params.items = [{ type: "LEAVE" | "CANCEL_LEAVE" | "OVERTIME", id }]，params.decision = "APPROVED" | "REJECTED"
+ */
+function batchReview(params) {
+  const items = Array.isArray(params.items) ? params.items.slice(0, 100) : [];
+  const decision = params.decision === "REJECTED" ? "REJECTED" : "APPROVED";
+  if (!items.length) return { success: false, message: "請至少勾選一張單據。" };
+  if (decision === "REJECTED" && !String(params.comment || "").trim()) {
+    return { success: false, message: "批次退回時必須填寫退回原因。" };
+  }
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) return { success: false, message: "系統忙碌中，請稍後再試。" };
+  try {
+    const results = items.map(it => {
+      const base = { approverId: params.approverId, comment: params.comment || "", _me: params._me };
+      let r;
+      try {
+        if (it.type === "OVERTIME") {
+          r = reviewOvertime(Object.assign(base, { overtimeId: String(it.id) }), decision);
+        } else {
+          r = reviewLeave(Object.assign(base, { requestId: String(it.id) }), decision);
+        }
+      } catch (e) {
+        console.error(e && e.stack ? e.stack : e);
+        r = { success: false, message: "處理失敗" };
+      }
+      return { id: it.id, success: !!(r && r.success), message: r ? r.message : "處理失敗" };
+    });
+    const ok = results.filter(r => r.success).length;
+    return {
+      success: ok > 0,
+      message: `批次${decision === "APPROVED" ? "核准" : "退回"}完成：成功 ${ok} 張` + (ok < results.length ? `，失敗 ${results.length - ok} 張` : "") + "。",
+      results: results
+    };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ======================== 加班申報與補休機制 ========================

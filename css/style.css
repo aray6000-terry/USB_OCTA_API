@@ -1513,3 +1513,48 @@ button:disabled,
   font-weight: 600;
 }
 
+
+
+/* ===== 批次簽核 ===== */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: var(--primary-light);
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius-md);
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+}
+.bulk-bar-info { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+.bulk-bar-info strong { color: var(--primary); font-size: 1.05rem; }
+.bulk-comment { flex: 1 1 220px; min-width: 180px; }
+.bulk-bar-actions { display: flex; gap: 8px; margin-left: auto; }
+.bulk-check { width: 18px; height: 18px; cursor: pointer; accent-color: var(--primary); }
+th.bulk-col, td.bulk-col { width: 36px; text-align: center; }
+tr.bulk-selected td { background: var(--primary-light); }
+@media (max-width: 640px) {
+  .bulk-bar-actions { width: 100%; margin-left: 0; }
+  .bulk-bar-actions .btn { flex: 1; }
+}
+
+/* ===== 版本資訊 (頁面最下方) ===== */
+.app-version-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 18px 16px 24px;
+  margin-top: 16px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+}
+.app-version-footer strong { font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+.app-version-footer .sep { opacity: 0.5; }
+@media (max-width: 768px) { .app-version-footer { padding-bottom: 84px; } }

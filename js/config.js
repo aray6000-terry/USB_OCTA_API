@@ -2,6 +2,9 @@
  * 系統全域設定與假別規則 (System Configuration)
  */
 const SYSTEM_CONFIG = {
+  // 前端版本號：每次更新前端時一併修改 (顯示於頁面最下方)
+  APP_VERSION: "V8 · 2026-11-06",
+
   // 標準工時設定 (08:30 - 18:00，午休 12:00 - 13:30 扣 1.5h，每日標準工時 8h)
   WORK_START: "08:30",
   WORK_END: "18:00",

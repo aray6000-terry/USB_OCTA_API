@@ -32,6 +32,21 @@ const ApiService = {
     if (typeof App !== "undefined" && typeof App.updateConnectionIndicator === "function") {
       App.updateConnectionIndicator();
     }
+    this.renderVersionFooter();
+  },
+
+  // 頁面最下方版本號：前端取自 config.js，後端取自 API 回傳的 apiVersion
+  renderVersionFooter() {
+    if (typeof document === "undefined") return;
+    const fe = document.getElementById("footerFrontendVersion");
+    const be = document.getElementById("footerBackendVersion");
+    if (fe) fe.textContent = SYSTEM_CONFIG.APP_VERSION || "--";
+    if (be) {
+      if (!this.isUsingRemoteGas()) be.textContent = "本機展示模式";
+      else if (this._remoteApiVersion && this._remoteApiVersion !== "legacy") be.textContent = this._remoteApiVersion;
+      else if (this._connectionStatus === "error") be.textContent = "連線失敗";
+      else be.textContent = "連線中...";
+    }
   },
 
   getGasUrl() {
@@ -139,7 +154,7 @@ const ApiService = {
     const MUTATION_ACTIONS = [
       "applyLeave", "cancelLeave", "approveLeave", "rejectLeave",
       "applyOvertime", "approveOvertime", "rejectOvertime",
-      "adminUpdateBalance", "adminUpdateUser", "adminCreateUser", "adminDeleteUser",
+      "adminUpdateBalance", "adminUpdateUser", "adminCreateUser", "adminDeleteUser", "batchReview",
       "changePassword", "syncStatutoryAnnualLeaves", "syncHolidays"
     ];
     const isMutation = MUTATION_ACTIONS.indexOf(action) !== -1;

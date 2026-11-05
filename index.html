@@ -562,6 +562,24 @@
             </button>
           </div>
 
+          <!-- 批次簽核工具列 (勾選後出現) -->
+          <div id="bulkApprovalBar" class="bulk-bar" style="display: none;">
+            <div class="bulk-bar-info">
+              <i class="fa-solid fa-list-check"></i>
+              已勾選 <strong id="bulkSelectedCount">0</strong> 張
+              <button type="button" class="btn btn-sm btn-secondary" onclick="App.clearBulkSelection()">取消勾選</button>
+            </div>
+            <input type="text" class="form-control bulk-comment" id="bulkComment" placeholder="簽核意見（退回時必填）">
+            <div class="bulk-bar-actions">
+              <button type="button" class="btn btn-sm btn-danger" id="btnBulkReject" onclick="App.submitBulkApproval(false)">
+                <i class="fa-solid fa-xmark"></i> 批次退回
+              </button>
+              <button type="button" class="btn btn-sm btn-success" id="btnBulkApprove" onclick="App.submitBulkApproval(true)">
+                <i class="fa-solid fa-check-double"></i> 批次核准
+              </button>
+            </div>
+          </div>
+
           <!-- 待審列表容器 -->
           <div class="content-panel">
             <div class="table-responsive">
@@ -959,6 +977,15 @@
 
           </div>
         </section>
+
+        <!-- 版本資訊 -->
+        <footer class="app-version-footer" id="appVersionFooter">
+          <span>優德美請假系統</span>
+          <span class="sep">·</span>
+          <span>前端 <strong id="footerFrontendVersion">--</strong></span>
+          <span class="sep">·</span>
+          <span>後端 <strong id="footerBackendVersion">連線中...</strong></span>
+        </footer>
 
       </div>
     </main>

@@ -82,7 +82,12 @@ const App = {
       console.log("偵測到本機殘留舊版資料庫網址，自動校正回全域官方 DEFAULT_GAS_URL！");
       localStorage.removeItem(SYSTEM_CONFIG.STORAGE_KEYS.GAS_URL);
     }
+    ApiService.renderVersionFooter();
     await this.checkAuth();
+    // 確保未登入時也能顯示後端版本
+    if (!ApiService._remoteApiVersion && ApiService.isUsingRemoteGas()) {
+      ApiService.callApi("ping").catch(() => {});
+    }
   },
 
   /**
@@ -1209,14 +1214,16 @@ const App = {
     document.getElementById("countPendingCancels").textContent = pendingCancels.length;
     document.getElementById("countPendingOvertimes").textContent = pendingOvertimes.length;
 
-    // 渲染當前 Tab 內容
+    // 渲染當前 Tab 內容 (切換頁籤或重新整理時清除勾選)
     const thead = document.getElementById("approvalTableHead");
     const tbody = document.getElementById("approvalTableBody");
     tbody.innerHTML = "";
+    this.onBulkRowToggle();
 
     if (this.state.approvalTab === "leaves") {
       thead.innerHTML = `
         <tr>
+          <th class="bulk-col"><input type="checkbox" class="bulk-check" id="bulkSelectAll" title="全選" onchange="App.toggleBulkSelectAll(this.checked)"></th>
           <th>單號</th>
           <th>申請人</th>
           <th>假別</th>
@@ -1229,7 +1236,7 @@ const App = {
       `;
 
       if (pendingLeaves.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之請假申請單 🎉</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之請假申請單 🎉</td></tr>`;
       } else {
         pendingLeaves.forEach(req => {
           const applicant = this.state.users.find(u => u.id === req.user_id) || { name: req.user_id, department_name: "" };
@@ -1240,6 +1247,7 @@ const App = {
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
+            <td class="bulk-col"><input type="checkbox" class="bulk-check bulk-row" data-type="LEAVE" data-id="${esc(req.id)}" onchange="App.onBulkRowToggle()"></td>
             <td><strong>${esc(req.id)}</strong></td>
             <td>
               <strong>${esc(applicant.name)}</strong>
@@ -1265,6 +1273,7 @@ const App = {
     } else if (this.state.approvalTab === "cancels") {
       thead.innerHTML = `
         <tr>
+          <th class="bulk-col"><input type="checkbox" class="bulk-check" id="bulkSelectAll" title="全選" onchange="App.toggleBulkSelectAll(this.checked)"></th>
           <th>單號</th>
           <th>申請人</th>
           <th>假別</th>
@@ -1276,7 +1285,7 @@ const App = {
       `;
 
       if (pendingCancels.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之銷假申請單</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之銷假申請單</td></tr>`;
       } else {
         pendingCancels.forEach(req => {
           const applicant = this.state.users.find(u => u.id === req.user_id) || { name: req.user_id, department_name: "" };
@@ -1284,6 +1293,7 @@ const App = {
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
+            <td class="bulk-col"><input type="checkbox" class="bulk-check bulk-row" data-type="CANCEL_LEAVE" data-id="${esc(req.id)}" onchange="App.onBulkRowToggle()"></td>
             <td><strong>${esc(req.id)}</strong></td>
             <td><strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</td>
             <td><span class="badge ${esc(typeDef.badgeClass || 'badge-blue')}">${esc(typeDef.name)}</span></td>
@@ -1302,6 +1312,7 @@ const App = {
     } else if (this.state.approvalTab === "overtimes") {
       thead.innerHTML = `
         <tr>
+          <th class="bulk-col"><input type="checkbox" class="bulk-check" id="bulkSelectAll" title="全選" onchange="App.toggleBulkSelectAll(this.checked)"></th>
           <th>單號</th>
           <th>申報人</th>
           <th>加班日期</th>
@@ -1314,13 +1325,14 @@ const App = {
       `;
 
       if (pendingOvertimes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之加班申報單</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 32px;">目前無任何待審核之加班申報單</td></tr>`;
       } else {
         pendingOvertimes.forEach(ot => {
           const applicant = this.state.users.find(u => u.id === ot.user_id) || { name: ot.user_id, department_name: "" };
 
           const tr = document.createElement("tr");
           tr.innerHTML = `
+            <td class="bulk-col"><input type="checkbox" class="bulk-check bulk-row" data-type="OVERTIME" data-id="${esc(ot.id)}" onchange="App.onBulkRowToggle()"></td>
             <td><strong>${esc(ot.id)}</strong></td>
             <td><strong>${esc(applicant.name)}</strong> (${esc(applicant.department_name)})</td>
             <td>${esc(ot.date)}</td>
@@ -1437,6 +1449,116 @@ const App = {
           tbody.appendChild(tr);
         });
       }
+    }
+  },
+
+  /**
+   * 批次簽核：勾選狀態
+   */
+  getBulkSelection() {
+    return Array.from(document.querySelectorAll("#approvalTableBody .bulk-row:checked"))
+      .map(cb => ({ type: cb.dataset.type, id: cb.dataset.id }));
+  },
+
+  onBulkRowToggle() {
+    const rows = Array.from(document.querySelectorAll("#approvalTableBody .bulk-row"));
+    const selected = rows.filter(cb => cb.checked);
+    rows.forEach(cb => { const tr = cb.closest("tr"); if (tr) tr.classList.toggle("bulk-selected", cb.checked); });
+    const bar = document.getElementById("bulkApprovalBar");
+    const countEl = document.getElementById("bulkSelectedCount");
+    if (countEl) countEl.textContent = selected.length;
+    if (bar) bar.style.display = selected.length > 0 ? "flex" : "none";
+    const all = document.getElementById("bulkSelectAll");
+    if (all) {
+      all.checked = rows.length > 0 && selected.length === rows.length;
+      all.indeterminate = selected.length > 0 && selected.length < rows.length;
+    }
+  },
+
+  toggleBulkSelectAll(checked) {
+    document.querySelectorAll("#approvalTableBody .bulk-row").forEach(cb => { cb.checked = checked; });
+    this.onBulkRowToggle();
+  },
+
+  clearBulkSelection() {
+    this.toggleBulkSelectAll(false);
+    const c = document.getElementById("bulkComment");
+    if (c) c.value = "";
+  },
+
+  /**
+   * 批次核准 / 退回：優先使用後端 batchReview 一次送出；舊版後端則自動改為逐張送出
+   */
+  async submitBulkApproval(isApprove) {
+    if (this.state.isSubmitting) return;
+    const items = this.getBulkSelection();
+    if (!items.length) {
+      this.showToast("請先勾選要簽核的單據。", "warning");
+      return;
+    }
+    const commentEl = document.getElementById("bulkComment");
+    const comment = commentEl ? commentEl.value.trim() : "";
+    if (!isApprove && !comment) {
+      this.showToast("批次退回時必須填寫退回原因！", "error");
+      if (commentEl) commentEl.focus();
+      return;
+    }
+    if (!confirm(`確定要${isApprove ? "核准" : "退回"}已勾選的 ${items.length} 張單據嗎？`)) return;
+
+    const user = this.state.currentUser;
+    const btnA = document.getElementById("btnBulkApprove");
+    const btnR = document.getElementById("btnBulkReject");
+    const activeBtn = isApprove ? btnA : btnR;
+    const originalHtml = activeBtn ? activeBtn.innerHTML : "";
+    this.state.isSubmitting = true;
+    if (btnA) btnA.disabled = true;
+    if (btnR) btnR.disabled = true;
+    if (activeBtn) activeBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 處理中 (${items.length} 張)...`;
+
+    let results = [];
+    try {
+      const res = await ApiService.callApi("batchReview", {
+        items, decision: isApprove ? "APPROVED" : "REJECTED", approverId: user.id, comment
+      });
+      if (res && Array.isArray(res.results)) {
+        results = res.results;
+      } else if (res && typeof res.message === "string" && /Action not supported|Mock 不支援|尚未支援此功能/.test(res.message)) {
+        // 後端尚未更新：逐張送出
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          if (activeBtn) activeBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 處理中 ${i + 1}/${items.length}...`;
+          let r;
+          if (it.type === "OVERTIME") {
+            r = await ApiService.reviewOvertime({ overtimeId: it.id, approverId: user.id, comment }, isApprove);
+          } else {
+            r = await ApiService.reviewLeave({ requestId: it.id, approverId: user.id, comment }, isApprove);
+          }
+          results.push({ id: it.id, success: !!(r && r.success), message: r ? r.message : "處理失敗" });
+        }
+      } else {
+        this.showToast(res ? res.message : "批次簽核失敗", "error");
+        return;
+      }
+
+      const ok = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success);
+      if (failed.length === 0) {
+        this.showToast(`已${isApprove ? "核准" : "退回"} ${ok} 張單據。`, "success");
+      } else {
+        this.showToast(`成功 ${ok} 張，失敗 ${failed.length} 張：` + failed.slice(0, 3).map(f => `${f.id}（${f.message}）`).join("；") + (failed.length > 3 ? "…" : ""), ok ? "warning" : "error");
+      }
+      if (commentEl) commentEl.value = "";
+      await this.loadData(user.id);
+      this.renderApprovalsView();
+      this.updatePendingBadges();
+    } catch (err) {
+      console.error("批次簽核發生例外:", err);
+      this.showToast("批次簽核失敗：" + (err.message || "網路異常"), "error");
+    } finally {
+      this.state.isSubmitting = false;
+      if (btnA) btnA.disabled = false;
+      if (btnR) btnR.disabled = false;
+      if (activeBtn) activeBtn.innerHTML = originalHtml;
     }
   },
 
