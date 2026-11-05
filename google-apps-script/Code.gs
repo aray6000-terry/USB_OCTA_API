@@ -214,7 +214,7 @@ function handleRequest(e) {
 
     switch (action) {
       case "ping":
-        result = { success: true, apiVersion: "20261103_V6", message: "Leave System API is online.", timestamp: new Date().toISOString() };
+        result = { success: true, apiVersion: "20261106_V7", message: "Leave System API is online.", timestamp: new Date().toISOString() };
         break;
 
       // initDatabase 已自 Web API 移除：只能由管理員在 Apps Script 編輯器中手動執行。
@@ -1643,6 +1643,7 @@ function canReview_(ss, approverId, applicantId, step, requestId) {
 
   if (step === "HR") {
     if (!isAdminOrHR_(approver)) return "此單已進入人資複核階段，僅限人資或管理員簽核。";
+    if (isTopAdmin_(approver)) return null; // 老闆可直接完成第二階 (含自己簽過第一階的單)
     const logs = sheetToObjects(ss.getSheetByName(CONFIG.SHEETS.APPROVAL_LOGS));
     const firstTier = logs.find(l => l.request_id === requestId && l.status === "APPROVED" && l.approver_role === "Direct Manager");
     if (firstTier && firstTier.approver_id === approverId) return "雙階簽核需由不同人員完成，您已簽過第一階。";
@@ -1743,7 +1744,8 @@ function reviewLeave(params, action) {
   if (action === "APPROVED") {
     // 檢查是否超過 3 天 (> 24 小時) 需多階 HR 審核；最高主管自核時不再轉人資
     const isSelfByTopAdmin = (approverId === req.userId);
-    const isMultiTier = req.totalHours > CONFIG.MULTI_TIER_THRESHOLD_HOURS && !isSelfByTopAdmin;
+    // 老闆 (最高 Admin) 核准即為最終決定，超過 3 天也不再轉人資
+    const isMultiTier = req.totalHours > CONFIG.MULTI_TIER_THRESHOLD_HOURS && !isSelfByTopAdmin && !isTopAdmin_(approver);
 
     if (isSelfByTopAdmin) {
       reqSheet.getRange(targetRow, statusIdx + 1).setValue("APPROVED");
